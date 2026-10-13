@@ -148,6 +148,12 @@ data class RequirementRule(
             is Kind.Choose -> k.options.flatMap { it.allCourses }
             is Kind.GeneralElectives -> emptyList()
         }
+
+    val degreeIsGeneralElectives: Boolean get() = kind is Kind.GeneralElectives
+
+    /** The label names courses (`CS 3000`) rather than describing a choice. */
+    val degreeNamesCourses: Boolean
+        get() = Regex("""^[A-Z]{2,5}\s?\d{4}""").containsMatchIn(displayLabel)
 }
 
 @Serializable
@@ -197,6 +203,50 @@ data class ProgramRequirements(
         return null
     }
     fun titleFor(key: CourseKey): String? = courseTitles["${key.subject} ${key.number}"]
+
+    data class RuleLocation(val section: RequirementSection, val group: RequirementGroup, val rule: RequirementRule)
+
+    fun degreeLocation(id: String): RuleLocation? {
+        for (section in sections) for (group in section.groups) {
+            val rule = group.rules.firstOrNull { it.id == id } ?: continue
+            return RuleLocation(section, group, rule)
+        }
+        return null
+    }
+
+    fun degreeShortName(id: String): String? {
+        val location = degreeLocation(id) ?: return null
+        if (location.group.rules.size == 1) {
+            val title = titleOf(id)
+            if (title != null) {
+                if (location.section.isConcentration && location.group.title == null && !location.rule.degreeNamesCourses) {
+                    return "${location.section.concentrationName} concentration"
+                }
+                return title
+            }
+        }
+        if (location.rule.degreeNamesCourses) return location.rule.displayLabel
+        location.group.title?.let { return it }
+        if (location.section.isConcentration) return "${location.section.concentrationName} concentration"
+        return location.section.title
+    }
+
+    fun degreeCountingName(id: String, course: CourseKey): String? {
+        val name = degreeShortName(id) ?: return null
+        if (!name.contains(course.description)) return name
+        val location = degreeLocation(id) ?: return name
+        location.group.title?.let { return it }
+        return if (location.section.isConcentration) "${location.section.concentrationName} concentration" else location.section.title
+    }
+
+    fun degreeRule(id: String?, named: String?): RequirementRule? {
+        if (id != null) rule(id)?.let { return it }
+        val name = named?.lowercase(Locale.US) ?: return null
+        val matches = allRules.filter { rule ->
+            listOfNotNull(degreeShortName(rule.id), titleOf(rule.id)).any { it.lowercase(Locale.US) == name }
+        }
+        return if (matches.size == 1) matches[0] else null
+    }
 }
 
 object ProgramCatalogParser {
@@ -233,6 +283,42 @@ object ProgramCatalogParser {
             if (end == start + 1) years += CatalogYear(start)
         }
         return years.sortedDescending()
+    }
+
+    fun universitywideLink(html: String): String? {
+        for ((href, _) in links(html)) {
+            if (!Regex("""(?i)university-?wide-?requirements""").containsMatchIn(href)) continue
+            val path = editionRelativePath(href.substringBefore('#'))
+            if (path.isEmpty()) continue
+            return if (path.endsWith("/")) path else "$path/"
+        }
+        return null
+    }
+
+    fun universitywideRequirements(html: String, fetchedAt: Long = System.currentTimeMillis()): UniversitywideRequirements? {
+        val text = HTMLText.plainText(requirementsContainer(html))
+        fun number(pattern: Regex) = pattern.find(text)?.groupValues?.get(1)?.toDoubleOrNull()
+        val parsed = UniversitywideRequirements(
+            totalHours = number(Regex("""(?i)minimum\s+(?:of\s+)?(\d+(?:\.\d+)?)\s+total\s+semester\s+hours""")),
+            gpa = number(Regex("""(?i)minimum\s+(?:cumulative\s+)?(\d\.\d+)\s+GPA""")),
+            residencyHours = number(Regex("""(?i)minimum\s+of\s+(\d+(?:\.\d+)?)\s+Northeastern\s+University\s+semester\s+hours""")),
+            requiresExperientialLearning = Regex("""(?i)experiential\s+learning\s+graduation\s+requirement""").containsMatchIn(text),
+            fetchedAt = fetchedAt,
+        )
+        if (parsed.totalHours == null && parsed.gpa == null && parsed.residencyHours == null && !parsed.requiresExperientialLearning) return null
+        return parsed
+    }
+
+    private fun requirementsContainer(html: String): String {
+        val start = Regex("""<div[^>]*id="programrequirementstextcontainer"""", RegexOption.IGNORE_CASE).find(html)
+            ?: Regex("""<div[^>]*id="textcontainer"""", RegexOption.IGNORE_CASE).find(html)
+            ?: return html
+        val rest = html.substring(start.range.last + 1)
+        val next = Regex("""<div[^>]*id="[a-z]+textcontainer"""", RegexOption.IGNORE_CASE).find(rest)
+        if (next != null) return rest.substring(0, next.range.first)
+        val footer = Regex("<footer", RegexOption.IGNORE_CASE).find(rest)
+        if (footer != null) return rest.substring(0, footer.range.first)
+        return rest
     }
 
     fun programs(html: String): List<CatalogProgram> {

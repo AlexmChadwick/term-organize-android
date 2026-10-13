@@ -289,6 +289,22 @@ data class DegreePlan(
     fun termMatching(term: Term): DegreePlanTerm? = terms.firstOrNull { it.matches(term) }
     val declaredEquivalences: app.termorganize.core.model.CourseEquivalences
         get() = app.termorganize.core.model.CourseEquivalences.fromPairs(courseEquivalences.map { it.course to it.countsAs })
+
+    fun setCourseNumbers(limit: CourseNumberLimit?, substitutionId: String): DegreePlan {
+        val next = substitutions.map { substitution ->
+            if (substitution.id != substitutionId) substitution
+            else {
+                val replacement = (substitution.change as? SubstitutionChange.Replace)?.replacement ?: return@map substitution
+                substitution.copy(change = SubstitutionChange.Replace(replacement.copy(courseNumbers = limit)))
+            }
+        }
+        return copy(substitutions = next)
+    }
+
+    fun declareEquivalence(course: CourseKey, countsAs: CourseKey, note: String = "Renumbered"): DegreePlan {
+        if (course == countsAs || declaredEquivalences.areEquivalent(course, countsAs)) return this
+        return copy(courseEquivalences = courseEquivalences + CourseEquivalence(course = course, countsAs = countsAs, note = note))
+    }
 }
 
 @Serializable
@@ -316,7 +332,10 @@ object UserJson {
             recents = obj.decodeEach("recents", RecentCourse.serializer()),
             plans = obj.decodeEach("plans", SchedulePlan.serializer()),
             watchlist = obj.decodeEach("watchlist", WatchItem.serializer()),
-            searchHistory = obj.array("searchHistory")?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            searchHistory = obj.array("searchHistory")?.mapNotNull { element ->
+                val primitive = element as? JsonPrimitive ?: return@mapNotNull null
+                if (primitive.isString) primitive.content else null
+            } ?: emptyList(),
             degreePlans = obj.decodeEach("degreePlans", DegreePlan.serializer()),
         )
     }

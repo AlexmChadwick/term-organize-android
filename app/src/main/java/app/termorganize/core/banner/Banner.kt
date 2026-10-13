@@ -495,4 +495,79 @@ object CatalogBuilder {
         val attributeList = attributes.map { app.termorganize.core.model.AttributeInfo(it.key, it.value) }.sortedBy { it.code }
         return courses.values.toList() to attributeList
     }
+
+    /**
+     * Merges a fresh section scrape into an existing catalog.
+     * Seats, times, and locations come from [fresh]. Instructors and descriptions already known
+     * are kept. Course details can also be borrowed from [knowledge] (other terms).
+     */
+    fun merge(
+        existing: app.termorganize.core.model.TermCatalog?,
+        fresh: List<BannerSection>,
+        term: app.termorganize.core.model.Term,
+        subjects: List<app.termorganize.core.model.Subject>? = null,
+        campuses: List<app.termorganize.core.model.Campus>? = null,
+        attributes: List<app.termorganize.core.model.AttributeInfo>? = null,
+        knowledge: Map<CourseKey, app.termorganize.core.model.Course> = emptyMap(),
+        now: Double = System.currentTimeMillis() / 1000.0,
+    ): app.termorganize.core.model.TermCatalog {
+        val previousSections = (existing?.sections ?: emptyList()).associateBy { it.crn }
+        val previousCourses = (existing?.courses ?: emptyList()).associateBy { it.key }
+        val sections = makeSections(fresh, previousSections)
+        val (stubs, freshAttributes) = stubCourses(fresh)
+        val courses = stubs.map { stub ->
+            val known = previousCourses[stub.key]
+            if (known != null) {
+                return@map known.copy(
+                    minCredits = stub.minCredits,
+                    maxCredits = stub.maxCredits,
+                    attributes = stub.attributes,
+                    specialTopics = known.specialTopics || stub.specialTopics,
+                )
+            }
+            val borrowed = knowledge[stub.key]
+            if (borrowed != null) {
+                return@map borrowed.copy(
+                    minCredits = stub.minCredits,
+                    maxCredits = stub.maxCredits,
+                    attributes = stub.attributes,
+                    specialTopics = borrowed.specialTopics || stub.specialTopics,
+                    postreqs = emptyList(),
+                )
+            }
+            stub
+        }
+        val mergedAttributes = LinkedHashMap<String, app.termorganize.core.model.AttributeInfo>()
+        for (attribute in existing?.attributes ?: emptyList()) mergedAttributes[attribute.code] = attribute
+        for (attribute in (attributes ?: emptyList()) + freshAttributes) mergedAttributes[attribute.code] = attribute
+        return app.termorganize.core.model.TermCatalog(
+            term = term,
+            generatedAt = existing?.generatedAt ?: now,
+            sectionsUpdatedAt = now,
+            courses = courses.sortedBy { it.key },
+            sections = sections.sortedWith(compareBy({ it.courseKey }, { it.sectionNumber })),
+            subjects = subjects ?: existing?.subjects ?: emptyList(),
+            attributes = mergedAttributes.values.sortedBy { it.code },
+            campuses = campuses ?: existing?.campuses ?: emptyList(),
+        ).recomputePostreqs()
+    }
+
+    /** Replaces the sections of one course after a live refresh. */
+    fun applyCourseRefresh(
+        catalog: app.termorganize.core.model.TermCatalog,
+        course: CourseKey,
+        banner: List<BannerSection>,
+        now: Double = System.currentTimeMillis() / 1000.0,
+    ): app.termorganize.core.model.TermCatalog {
+        val previous = catalog.sections.filter { it.courseKey == course }.associateBy { it.crn }
+        val fresh = makeSections(banner, previous)
+        val sections = (catalog.sections.filter { it.courseKey != course } + fresh)
+            .sortedWith(compareBy({ it.courseKey }, { it.sectionNumber }))
+        var courses = catalog.courses
+        if (courses.none { it.key == course } && banner.isNotEmpty()) {
+            val (stubs, _) = stubCourses(banner)
+            courses = (courses + stubs).sortedBy { it.key }
+        }
+        return catalog.copy(sectionsUpdatedAt = now, courses = courses, sections = sections)
+    }
 }

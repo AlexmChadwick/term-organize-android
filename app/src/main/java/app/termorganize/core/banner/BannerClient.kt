@@ -5,6 +5,8 @@
 package app.termorganize.core.banner
 
 import app.termorganize.core.model.AppJson
+import app.termorganize.core.model.AttributeInfo
+import app.termorganize.core.model.Campus
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
 import app.termorganize.core.model.Subject
@@ -68,6 +70,75 @@ class BannerClient(
         return CatalogBuilder.makeSections(exact, previous.associateBy { it.crn })
     }
 
+    suspend fun fetchSubjects(term: String): List<Subject> =
+        fetchCodes("classSearch/get_subject", term, 900).map { Subject(it.code, HTMLText.decodeEntities(it.description).trim()) }
+
+    suspend fun fetchCampuses(term: String): List<Campus> =
+        fetchCodes("classSearch/get_campus", term, 200).map { Campus(it.code, HTMLText.decodeEntities(it.description).trim()) }
+
+    suspend fun fetchAttributes(term: String): List<AttributeInfo> =
+        fetchCodes("classSearch/get_attribute", term, 500).map { AttributeInfo(it.code, HTMLText.decodeEntities(it.description).trim()) }
+
+    suspend fun resetSearch(cookie: String) {
+        client.post(base + "classSearch/resetDataForm") {
+            header(HttpHeaders.Cookie, cookie)
+        }
+    }
+
+    /**
+     * Every section in a term. Pages until Banner returns a short page or the reported total.
+     * A safety cap keeps a bad total from paging forever.
+     */
+    suspend fun fetchAllSections(
+        term: String,
+        pageSize: Int = 500,
+        onProgress: (fetched: Int, total: Int) -> Unit = { _, _ -> },
+    ): List<BannerSection> {
+        val cookie = openSession(term)
+        val probe = searchPage(term, cookie, offset = 0, pageSize = 1)
+        val total = probe.totalCount
+        if (total <= 0) return emptyList()
+        onProgress(0, total)
+        val all = ArrayList<BannerSection>(total)
+        val seen = HashSet<String>()
+        var page = 0
+        while (all.size < total && page < 80) {
+            val data = searchSections(term, cookie, offset = page * pageSize, pageSize = pageSize)
+            if (data.isEmpty()) break
+            for (section in data) if (seen.add(section.courseReferenceNumber)) all += section
+            onProgress(minOf(all.size, total), total)
+            page += 1
+            if (data.size < pageSize) break
+        }
+        return all
+    }
+
+    /** Which of [courses] have at least one exact section in [term]. One session, reset between courses. */
+    suspend fun fetchOfferedCourses(term: String, courses: List<CourseKey>): Set<CourseKey> {
+        if (courses.isEmpty()) return emptySet()
+        val cookie = openSession(term)
+        val offered = mutableSetOf<CourseKey>()
+        courses.forEachIndexed { index, key ->
+            if (index > 0) resetSearch(cookie)
+            val page = searchSections(term, cookie, key.subject, key.number, pageSize = 20)
+            if (page.any { it.subject == key.subject && it.courseNumber == key.number }) offered += key
+        }
+        return offered
+    }
+
+    private suspend fun searchPage(term: String, cookie: String, offset: Int, pageSize: Int): BannerSectionPage {
+        val query = "txt_term=$term&pageOffset=$offset&pageMaxSize=$pageSize&sortColumn=subjectDescription&sortDirection=asc"
+        val text = client.get(base + "searchResults/searchResults?$query") {
+            header(HttpHeaders.Cookie, cookie)
+        }.bodyAsText()
+        return AppJson.catalog.decodeFromString(BannerSectionPage.serializer(), text)
+    }
+
+    private suspend fun fetchCodes(path: String, term: String, max: Int): List<BannerCodeDescription> {
+        val text = client.get(base + "$path?searchTerm=&term=$term&offset=1&max=$max").bodyAsText()
+        return AppJson.catalog.decodeFromString(text)
+    }
+
     fun close() = client.close()
 
     companion object {
@@ -78,5 +149,3 @@ class BannerClient(
         }
     }
 }
-
-suspend fun BannerClient.fetchSubjects(term: String): List<Subject> = emptyList()

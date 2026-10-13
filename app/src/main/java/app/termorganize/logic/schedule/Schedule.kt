@@ -396,9 +396,10 @@ data class ScheduleCourseInput(
     val maxCredits: Int = 0,
 )
 
-data class ScheduleReason(val kind: Kind, val text: String) {
+data class ScheduleReason(val kind: Kind, val text: String, val symbol: String = "") {
     enum class Kind { BENEFIT, CAVEAT }
     val isCaveat get() = kind == Kind.CAVEAT
+    val id: String get() = (if (kind == Kind.BENEFIT) "+" else "-") + text
 }
 
 data class GeneratedSchedule(
@@ -417,23 +418,67 @@ data class GeneratedSchedule(
 ) {
     val sortedCRNs: List<String> = crns.sorted()
     val id: String = sortedCRNs.joinToString("-")
+
+    companion object {
+        fun measured(sections: List<CourseSection>, preferences: SchedulePreferences = SchedulePreferences()): GeneratedSchedule =
+            ScheduleEngine.measure(sections, preferences)
+    }
+}
+
+enum class ScheduleFilterReason {
+    EXCLUDED_BY_USER,
+    STARTS_TOO_EARLY,
+    ENDS_TOO_LATE,
+    FREE_DAY,
+    HONORS,
+    ONLINE,
+    SEATS,
+    CAMPUS,
+    BLOCKED_TIME,
+    PREF_STARTS_TOO_EARLY,
+    PREF_ENDS_TOO_LATE,
+    PREF_DAY_OFF,
+    PREF_FORMAT,
+    PREF_SEATS,
+    PREF_CAMPUS,
+    PREF_WORKLOAD,
+}
+
+enum class ConflictReason { OVERLAP, TRAVEL_TIME }
+
+data class ConflictPair(
+    val first: CourseKey,
+    val second: CourseKey,
+    val reason: ConflictReason = ConflictReason.OVERLAP,
+)
+
+sealed class CountProblem {
+    data class TooManyRequired(val required: Int, val wanted: Int) : CountProblem()
+    data class TooFewCourses(val available: Int, val wanted: Int) : CountProblem()
+    data class CreditsOverTarget(val required: Int, val limit: Int) : CountProblem()
+    data class CreditsUnderTarget(val available: Int, val wanted: Int) : CountProblem()
 }
 
 data class ScheduleDiagnostics(
     val courses: List<CourseReport> = emptyList(),
-    val conflictingPairs: List<Pair<CourseKey, CourseKey>> = emptyList(),
-    val countProblem: String? = null,
+    val conflictingPairs: List<ConflictPair> = emptyList(),
+    val countProblem: CountProblem? = null,
     val suggestions: List<String> = emptyList(),
+    val filters: ScheduleFilters = ScheduleFilters(),
+    val preferences: SchedulePreferences = SchedulePreferences(),
 ) {
     data class CourseReport(
         val key: CourseKey,
         val isRequired: Boolean,
         val totalSections: Int,
         val remainingSections: Int,
-        val rejections: Map<String, Int>,
+        val rejections: Map<ScheduleFilterReason, Int>,
     ) {
         val isBlocked get() = remainingSections == 0
     }
+
+    val hasNoCourses: Boolean get() = courses.isEmpty()
+    val blockedRequiredCourses: List<CourseReport> get() = courses.filter { it.isRequired && it.isBlocked }
 }
 
 data class ScheduleGenerationResult(
@@ -441,215 +486,201 @@ data class ScheduleGenerationResult(
     val totalFound: Int = 0,
     val isExhaustive: Boolean = true,
     val diagnostics: ScheduleDiagnostics = ScheduleDiagnostics(),
-)
+    val wasCancelled: Boolean = false,
+    val elapsedNanos: Long = 0,
+) {
+    val elapsedSeconds: Double get() = elapsedNanos / 1_000_000_000.0
+    val isTruncated: Boolean get() = !isExhaustive || schedules.size < totalFound
+}
+
+sealed class PreferenceRelaxation {
+    data object SoftenEarliestStart : PreferenceRelaxation()
+    data object SoftenLatestEnd : PreferenceRelaxation()
+    data object SoftenDaysOff : PreferenceRelaxation()
+    data class SoftenBlockedTime(val id: String, val label: String) : PreferenceRelaxation()
+    data object SoftenFormat : PreferenceRelaxation()
+    data object SoftenCampus : PreferenceRelaxation()
+    data object AllowFullSections : PreferenceRelaxation()
+    data object ClearMaxClassesPerDay : PreferenceRelaxation()
+    data object ClearMaxMinutesPerDay : PreferenceRelaxation()
+    data object SoftenMinimumBreak : PreferenceRelaxation()
+    data object ClearCreditTarget : PreferenceRelaxation()
+
+    val title: String
+        get() = when (this) {
+            SoftenEarliestStart -> "Allow earlier classes if needed"
+            SoftenLatestEnd -> "Allow later classes if needed"
+            SoftenDaysOff -> "Allow classes on your days off if needed"
+            is SoftenBlockedTime -> "Allow classes during “${label}” if needed"
+            SoftenFormat -> "Allow other formats if needed"
+            SoftenCampus -> "Allow other campuses if needed"
+            AllowFullSections -> "Include full sections"
+            ClearMaxClassesPerDay -> "Remove the classes-a-day limit"
+            ClearMaxMinutesPerDay -> "Remove the hours-a-day limit"
+            SoftenMinimumBreak -> "Don’t require time to walk between classes"
+            ClearCreditTarget -> "Remove the credit target"
+        }
+
+    fun apply(p: SchedulePreferences): SchedulePreferences = when (this) {
+        SoftenEarliestStart -> p.copy(earliestStart = p.earliestStart?.copy(strength = PreferenceStrength.PREFERRED))
+        SoftenLatestEnd -> p.copy(latestEnd = p.latestEnd?.copy(strength = PreferenceStrength.PREFERRED))
+        SoftenDaysOff -> p.copy(daysOffStrength = PreferenceStrength.PREFERRED)
+        is SoftenBlockedTime -> p.copy(blockedTimes = p.blockedTimes.map { if (it.id == id) it.copy(strength = PreferenceStrength.PREFERRED) else it })
+        SoftenFormat -> p.copy(formatStrength = PreferenceStrength.PREFERRED)
+        SoftenCampus -> p.copy(campusStrength = PreferenceStrength.PREFERRED)
+        AllowFullSections -> p.copy(seats = SeatPolicy.ANY)
+        ClearMaxClassesPerDay -> p.copy(maxClassesPerDay = null)
+        ClearMaxMinutesPerDay -> p.copy(maxMinutesPerDay = null)
+        SoftenMinimumBreak -> p.copy(minimumBreakStrength = PreferenceStrength.PREFERRED)
+        ClearCreditTarget -> p.copy(creditTarget = null)
+    }
+
+    companion object {
+        fun available(p: SchedulePreferences): List<PreferenceRelaxation> {
+            val result = ArrayList<PreferenceRelaxation>()
+            if (p.earliestStart?.strength == PreferenceStrength.REQUIRED) result += SoftenEarliestStart
+            if (p.latestEnd?.strength == PreferenceStrength.REQUIRED) result += SoftenLatestEnd
+            if (!p.daysOff.isEmpty && p.daysOffStrength == PreferenceStrength.REQUIRED) result += SoftenDaysOff
+            for (block in p.activeBlockedTimes) {
+                if (block.strength == PreferenceStrength.REQUIRED) result += SoftenBlockedTime(block.id, block.label)
+            }
+            if (p.format != FormatPreference.NO_PREFERENCE && p.formatStrength == PreferenceStrength.REQUIRED) result += SoftenFormat
+            if (p.campus != null && p.campusStrength == PreferenceStrength.REQUIRED) result += SoftenCampus
+            if (p.seats != SeatPolicy.ANY) result += AllowFullSections
+            if (p.maxClassesPerDay != null) result += ClearMaxClassesPerDay
+            if (p.maxMinutesPerDay != null) result += ClearMaxMinutesPerDay
+            if (p.breaks == BreakPreference.AT_LEAST && p.minimumBreakStrength == PreferenceStrength.REQUIRED) result += SoftenMinimumBreak
+            if (p.creditTarget != null) result += ClearCreditTarget
+            return result
+        }
+    }
+}
+
+sealed class ScheduleRelaxation {
+    data object ClearEarliestStart : ScheduleRelaxation()
+    data object ClearLatestEnd : ScheduleRelaxation()
+    data object ClearFreeDays : ScheduleRelaxation()
+    data object AllowHonors : ScheduleRelaxation()
+    data object AllowOnline : ScheduleRelaxation()
+    data object AllowFullSections : ScheduleRelaxation()
+    data object ClearCampus : ScheduleRelaxation()
+    data object ClearCourseCount : ScheduleRelaxation()
+    data class MakeOptional(val key: CourseKey) : ScheduleRelaxation()
+    data class Preference(val relaxation: PreferenceRelaxation) : ScheduleRelaxation()
+
+    val id: String
+        get() = when (this) {
+            is MakeOptional -> "optional-$key"
+            is Preference -> "preference-$relaxation"
+            else -> toString()
+        }
+
+    val title: String
+        get() = when (this) {
+            ClearEarliestStart -> "Remove start time limit"
+            ClearLatestEnd -> "Remove end time limit"
+            ClearFreeDays -> "Allow classes on every day"
+            AllowHonors -> "Include honors sections"
+            AllowOnline -> "Include online sections"
+            AllowFullSections -> "Include full sections"
+            ClearCampus -> "Allow any campus"
+            ClearCourseCount -> "Use any number of courses"
+            is MakeOptional -> "Make ${key.description} optional"
+            is Preference -> relaxation.title
+        }
+
+    fun apply(filters: ScheduleFilters): ScheduleFilters = when (this) {
+        ClearEarliestStart -> filters.copy(earliestStart = null)
+        ClearLatestEnd -> filters.copy(latestEnd = null)
+        ClearFreeDays -> filters.copy(freeDays = DaySet(0))
+        AllowHonors -> filters.copy(includeHonors = true)
+        AllowOnline -> filters.copy(includeOnline = true)
+        AllowFullSections -> filters.copy(hideFullSections = false, minSeats = 0)
+        ClearCampus -> filters.copy(campus = null)
+        ClearCourseCount -> filters.copy(courseCount = null)
+        is MakeOptional, is Preference -> filters
+    }
+
+    fun apply(preferences: SchedulePreferences): SchedulePreferences = when (this) {
+        is Preference -> relaxation.apply(preferences)
+        else -> preferences
+    }
+}
+
+data class ScheduleSuggestion(
+    val relaxation: ScheduleRelaxation,
+    val scheduleCount: Int,
+    val isLowerBound: Boolean,
+) {
+    val id: String get() = relaxation.id
+}
 
 object ScheduleGenerator {
-    data class Limits(val maxResults: Int = 5_000, val maxNodes: Int = 1_500_000)
+    class Limits(
+        val maxResults: Int = 5_000,
+        val maxExhaustiveLeaves: Int = 2_500_000,
+        val maxNodes: Int = 12_000_000,
+        timeBudget: Double = 0.9,
+        val sampleLeaves: Int = 150_000,
+        sampleTimeBudget: Double = 0.35,
+        val allowSampling: Boolean = true,
+    ) {
+        val timeBudgetNanos: Long = (timeBudget * 1_000_000_000.0).toLong()
+        val sampleTimeBudgetNanos: Long = (sampleTimeBudget * 1_000_000_000.0).toLong()
+
+        companion object {
+            val standard = Limits()
+            val probe = Limits(
+                maxResults = 1,
+                maxExhaustiveLeaves = 300,
+                maxNodes = 300_000,
+                timeBudget = 0.25,
+                sampleLeaves = 0,
+                sampleTimeBudget = 0.0,
+                allowSampling = false,
+            )
+        }
+    }
 
     fun hasNoCampus(section: CourseSection) = section.campus.contains("no campus", ignoreCase = true)
+
+    fun rejectionReasons(
+        section: CourseSection,
+        filters: ScheduleFilters,
+        preferences: SchedulePreferences = SchedulePreferences(),
+        excluded: Set<String> = emptySet(),
+    ): Set<ScheduleFilterReason> {
+        val reasons = LinkedHashSet<ScheduleFilterReason>()
+        if (section.crn in excluded) reasons += ScheduleFilterReason.EXCLUDED_BY_USER
+        val weekly = section.weeklyMeetings
+        if (filters.earliestStart != null && weekly.any { (it.start ?: Int.MAX_VALUE) < filters.earliestStart }) reasons += ScheduleFilterReason.STARTS_TOO_EARLY
+        if (filters.latestEnd != null && weekly.any { (it.end ?: 0) > filters.latestEnd }) reasons += ScheduleFilterReason.ENDS_TOO_LATE
+        if (!filters.freeDays.isEmpty && weekly.any { !it.days.isDisjoint(filters.freeDays) }) reasons += ScheduleFilterReason.FREE_DAY
+        if (!filters.includeHonors && section.honors) reasons += ScheduleFilterReason.HONORS
+        if (!filters.includeOnline && section.isOnline) reasons += ScheduleFilterReason.ONLINE
+        if (filters.hideFullSections && section.seatsRemaining <= 0) reasons += ScheduleFilterReason.SEATS
+        if (filters.minSeats > 0 && section.seatsRemaining < filters.minSeats) reasons += ScheduleFilterReason.SEATS
+        if (filters.campus != null && !section.isOnline && !hasNoCampus(section) && section.campus != filters.campus) reasons += ScheduleFilterReason.CAMPUS
+        if (!preferences.isDefault) reasons += SchedulePreferenceRules.rejectionReasons(section, preferences)
+        return reasons
+    }
+
+    fun passesFilters(section: CourseSection, filters: ScheduleFilters) = rejectionReasons(section, filters).isEmpty()
 
     fun generate(
         courses: List<ScheduleCourseInput>,
         filters: ScheduleFilters,
         preferences: SchedulePreferences = SchedulePreferences(),
         sort: ScheduleSortOption = ScheduleSortOption.BEST,
-        limits: Limits = Limits(),
-    ): ScheduleGenerationResult {
-        val prefs = preferences.normalized()
-        if (courses.isEmpty()) return ScheduleGenerationResult()
-        val kept = mutableListOf<List<CourseSection>>()
-        val reports = mutableListOf<ScheduleDiagnostics.CourseReport>()
-        for (course in courses) {
-            val remaining = mutableListOf<CourseSection>()
-            val rejections = mutableMapOf<String, Int>()
-            for (section in course.sections) {
-                val reasons = rejectionReasons(section, filters, prefs, course.excludedCRNs)
-                if (reasons.isEmpty()) remaining += section
-                else reasons.forEach { rejections[it] = (rejections[it] ?: 0) + 1 }
-            }
-            kept += remaining
-            reports += ScheduleDiagnostics.CourseReport(course.key, course.isRequired, course.sections.size, remaining.size, rejections)
-        }
-        var diagnostics = ScheduleDiagnostics(reports)
-        val required = courses.indices.filter { courses[it].isRequired }
-        val optional = courses.indices.filter { !courses[it].isRequired && kept[it].isNotEmpty() }
-        val target = filters.courseCount?.takeIf { it > 0 }
-        if (required.any { kept[it].isEmpty() }) {
-            diagnostics = diagnostics.copy(suggestions = suggestions(courses, kept, filters, prefs))
-            return ScheduleGenerationResult(diagnostics = diagnostics)
-        }
-        if (target != null) {
-            if (required.size > target) {
-                return ScheduleGenerationResult(diagnostics = diagnostics.copy(countProblem = "More required courses (${required.size}) than the ${target} you asked for."))
-            }
-            if (required.size + optional.size < target) {
-                return ScheduleGenerationResult(diagnostics = diagnostics.copy(countProblem = "Only ${required.size + optional.size} courses can be scheduled, and you asked for $target."))
-            }
-        }
-        val order = required.sortedBy { kept[it].size } + optional.sortedBy { kept[it].size }
-        if (order.isEmpty()) return ScheduleGenerationResult(diagnostics = diagnostics)
-        data class Slot(val courseIndex: Int, val sections: List<CourseSection>, val masks: List<ScheduleSlotMask>, val required: Boolean)
-        val slots = order.map { i ->
-            val sections = kept[i]
-            Slot(i, sections, sections.map { ScheduleSlotMask.of(it) }, courses[i].isRequired)
-        }
-        val found = mutableListOf<GeneratedSchedule>()
-        var total = 0
-        var nodes = 0
-        var exhaustive = true
-        val chosen = IntArray(slots.size) { -1 }
-        fun conflictsWith(slot: Int, sectionIndex: Int): Boolean {
-            val mask = slots[slot].masks[sectionIndex]
-            val meetings = slots[slot].sections[sectionIndex].weeklyMeetings
-            for (s in 0 until slot) {
-                val pick = chosen[s]
-                if (pick < 0) continue
-                if (mask.conflicts(slots[s].masks[pick]) && meetingsConflict(meetings, slots[s].sections[pick].weeklyMeetings)) return true
-                if (prefs.breaks == BreakPreference.AT_LEAST && prefs.minimumBreakStrength == PreferenceStrength.REQUIRED) {
-                    if (SchedulePreferenceRules.tooClose(slots[slot].sections[sectionIndex], meetings, slots[s].sections[pick], slots[s].sections[pick].weeklyMeetings, prefs.minimumBreakMinutes)) return true
-                }
-            }
-            return false
-        }
-        fun record() {
-            val picks = mutableListOf<Pair<Int, CourseSection>>()
-            for (s in slots.indices) {
-                val pick = chosen[s]
-                if (pick < 0) continue
-                picks += slots[s].courseIndex to slots[s].sections[pick]
-            }
-            if (target != null && picks.size != target) return
-            if (target == null && prefs.creditTarget == null) {
-                for (s in slots.indices) {
-                    if (chosen[s] >= 0 || slots[s].required) continue
-                    if (slots[s].sections.indices.any { !conflictsWith(s, it) }) return
-                }
-            }
-            val sections = picks.sortedBy { it.first }.map { it.second }
-            total++
-            if (found.size < limits.maxResults) found += materialize(sections, prefs)
-            else exhaustive = false
-        }
-        fun dfs(slot: Int) {
-            if (nodes++ > limits.maxNodes) { exhaustive = false; return }
-            if (slot == slots.size) { record(); return }
-            val current = slots[slot]
-            if (!current.required) {
-                chosen[slot] = -1
-                dfs(slot + 1)
-                if (!exhaustive && nodes > limits.maxNodes) return
-            }
-            for (i in current.sections.indices) {
-                if (conflictsWith(slot, i)) continue
-                chosen[slot] = i
-                dfs(slot + 1)
-                if (!exhaustive && nodes > limits.maxNodes) return
-            }
-            chosen[slot] = -1
-        }
-        dfs(0)
-        val pairs = mutableListOf<Pair<CourseKey, CourseKey>>()
-        if (total == 0 && exhaustive) {
-            for (a in slots.indices) for (b in slots.indices) if (b > a && slots[a].required && slots[b].required) {
-                val ok = slots[a].sections.indices.any { i ->
-                    slots[b].sections.indices.any { j ->
-                        val ma = slots[a].masks[i]
-                        val mb = slots[b].masks[j]
-                        !(ma.conflicts(mb) && meetingsConflict(slots[a].sections[i].weeklyMeetings, slots[b].sections[j].weeklyMeetings))
-                    }
-                }
-                if (!ok) pairs += courses[slots[a].courseIndex].key to courses[slots[b].courseIndex].key
-            }
-        }
-        val suggestions = if (total == 0) suggestions(courses, kept, filters, prefs) else emptyList()
-        val sorted = sortSchedules(found, sort)
-        return ScheduleGenerationResult(sorted, total, exhaustive, diagnostics.copy(conflictingPairs = pairs, suggestions = suggestions))
-    }
+        limits: Limits = Limits.standard,
+    ): ScheduleGenerationResult = ScheduleEngine.generate(courses, filters, preferences.normalized(), sort, limits)
 
-    private fun meetingsConflict(a: List<Meeting>, b: List<Meeting>) = a.any { x -> b.any { x.overlaps(it) } }
-
-    fun rejectionReasons(section: CourseSection, filters: ScheduleFilters, preferences: SchedulePreferences, excluded: Set<String>): List<String> {
-        val reasons = mutableListOf<String>()
-        if (section.crn in excluded) reasons += "excluded"
-        val weekly = section.weeklyMeetings
-        if (filters.earliestStart != null && weekly.any { (it.start ?: Int.MAX_VALUE) < filters.earliestStart }) reasons += "starts too early"
-        if (filters.latestEnd != null && weekly.any { (it.end ?: 0) > filters.latestEnd }) reasons += "ends too late"
-        if (!filters.freeDays.isEmpty && weekly.any { !it.days.isDisjoint(filters.freeDays) }) reasons += "free day"
-        if (!filters.includeHonors && section.honors) reasons += "honors"
-        if (!filters.includeOnline && section.isOnline) reasons += "online"
-        if (filters.hideFullSections && section.seatsRemaining <= 0) reasons += "full"
-        if (filters.minSeats > 0 && section.seatsRemaining < filters.minSeats) reasons += "seats"
-        if (filters.campus != null && !section.isOnline && !hasNoCampus(section) && section.campus != filters.campus) reasons += "campus"
-        if (!preferences.isDefault) reasons += SchedulePreferenceRules.rejectionLabels(section, preferences)
-        return reasons
-    }
-
-    private fun materialize(sections: List<CourseSection>, preferences: SchedulePreferences): GeneratedSchedule {
-        val days = mutableSetOf<Int>()
-        val classDays = mutableSetOf<Int>()
-        var earliest = Int.MAX_VALUE
-        var latest = Int.MIN_VALUE
-        var minSeats = Int.MAX_VALUE
-        var totalSeats = 0
-        var full = 0
-        val byDay = mutableMapOf<Int, MutableList<Pair<Int, Int>>>()
-        for (section in sections) {
-            val seats = section.seatsRemaining.coerceAtLeast(0)
-            minSeats = min(minSeats, seats)
-            totalSeats += seats
-            if (seats == 0 && section.seatCapacity > 0) full++
-            for (m in section.weeklyMeetings) {
-                val s = m.start ?: continue
-                val e = m.end ?: continue
-                earliest = min(earliest, s)
-                latest = maxOf(latest, e)
-                for (d in m.days.indices) {
-                    classDays += d
-                    if (!section.isOnline && !m.isOnline) days += d
-                    byDay.getOrPut(d) { mutableListOf() }.add(s to e)
-                }
-            }
-        }
-        var gaps = 0
-        for (list in byDay.values) {
-            val sorted = list.sortedBy { it.first }
-            for (i in 1 until sorted.size) {
-                val gap = sorted[i].first - sorted[i - 1].second
-                if (gap >= 20) gaps += gap
-            }
-        }
-        val score = score(days.size, classDays.size, earliest, latest, gaps, full, if (minSeats == Int.MAX_VALUE) 0 else minSeats, sections, preferences)
-        val reasons = SchedulePreferenceRules.reasons(sections, preferences)
-        return GeneratedSchedule(
-            sections.map { it.crn }, sections, days.size, classDays.size,
-            if (earliest == Int.MAX_VALUE) null else earliest,
-            if (classDays.isEmpty()) null else latest,
-            gaps, if (minSeats == Int.MAX_VALUE) 0 else minSeats, totalSeats, full, score, reasons,
-        )
-    }
-
-    private fun score(campusDays: Int, classDays: Int, earliest: Int, latest: Int, gaps: Int, full: Int, minSeats: Int, sections: List<CourseSection>, p: SchedulePreferences): Double {
-        var s = 100.0 - campusDays * 4.0 - full * 8.0 + minSeats * 0.15 - gaps * 0.02
-        if (earliest != Int.MAX_VALUE) s += earliest / 120.0
-        if (latest != Int.MIN_VALUE) s -= latest / 240.0
-        if (!p.isDefault) s += sections.sumOf { SchedulePreferenceRules.sectionScore(it, p) }
-        if (p.dayLayout == DayLayout.FEWER_DAYS) s -= classDays * 6
-        if (p.dayLayout == DayLayout.SPREAD_OUT) s += classDays * 3
-        if (p.gaps == GapPreference.COMPACT) s -= gaps * 0.05
-        return s
-    }
-
-    private fun sortSchedules(list: List<GeneratedSchedule>, sort: ScheduleSortOption): List<GeneratedSchedule> {
-        val cmp = when (sort) {
-            ScheduleSortOption.BEST -> compareByDescending<GeneratedSchedule> { it.score }.thenBy { it.id }
-            ScheduleSortOption.FEWEST_DAYS -> compareBy<GeneratedSchedule> { it.daysOnCampus }.thenByDescending { it.score }
-            ScheduleSortOption.LATEST_START -> compareByDescending<GeneratedSchedule> { it.earliestStart ?: 0 }.thenByDescending { it.score }
-            ScheduleSortOption.EARLIEST_FINISH -> compareBy<GeneratedSchedule> { it.latestEnd ?: Int.MAX_VALUE }.thenByDescending { it.score }
-            ScheduleSortOption.FEWEST_GAPS -> compareBy<GeneratedSchedule> { it.totalGapMinutes }.thenByDescending { it.score }
-            ScheduleSortOption.MOST_SEATS -> compareByDescending<GeneratedSchedule> { it.totalSeats }.thenByDescending { it.score }
-        }
-        return list.sortedWith(cmp)
-    }
+    fun suggestRelaxations(
+        courses: List<ScheduleCourseInput>,
+        filters: ScheduleFilters,
+        preferences: SchedulePreferences = SchedulePreferences(),
+        includeCourseRelaxations: Boolean = true,
+    ): List<ScheduleSuggestion> = ScheduleEngine.suggestRelaxations(courses, filters, preferences.normalized(), includeCourseRelaxations)
 
     fun suggestions(courses: List<ScheduleCourseInput>, kept: List<List<CourseSection>>, filters: ScheduleFilters, prefs: SchedulePreferences): List<String> {
         val out = mutableListOf<String>()
@@ -669,30 +700,47 @@ object ScheduleGenerator {
 }
 
 object SchedulePreferenceRules {
-    fun rejectionLabels(section: CourseSection, p: SchedulePreferences): List<String> {
-        val reasons = mutableListOf<String>()
+    fun rejectionReasons(section: CourseSection, p: SchedulePreferences): Set<ScheduleFilterReason> {
+        val reasons = LinkedHashSet<ScheduleFilterReason>()
         val weekly = section.weeklyMeetings
-        if (p.earliestStart?.strength == PreferenceStrength.REQUIRED && weekly.any { (it.start ?: Int.MAX_VALUE) < p.earliestStart.minutes }) reasons += "before earliest start"
-        if (p.latestEnd?.strength == PreferenceStrength.REQUIRED && weekly.any { (it.end ?: 0) > p.latestEnd.minutes }) reasons += "after latest end"
-        if (p.daysOffStrength == PreferenceStrength.REQUIRED && !p.daysOff.isEmpty && weekly.any { !it.days.isDisjoint(p.daysOff) }) reasons += "day off"
-        if (p.blockedTimes.any { it.isActive && it.strength == PreferenceStrength.REQUIRED && overlaps(it, weekly) }) reasons += "blocked time"
-        if (p.format != FormatPreference.NO_PREFERENCE && p.formatStrength == PreferenceStrength.REQUIRED && SchedulePreferences.formatOf(section).mismatch(p.format) > 0) reasons += "format"
-        if (p.campus != null && p.campusStrength == PreferenceStrength.REQUIRED && !section.isOnline && !ScheduleGenerator.hasNoCampus(section) && section.campus != p.campus) reasons += "campus preference"
+        val earliest = p.earliestStart
+        if (earliest != null && earliest.strength == PreferenceStrength.REQUIRED && weekly.any { (it.start ?: Int.MAX_VALUE) < earliest.minutes }) {
+            reasons += ScheduleFilterReason.PREF_STARTS_TOO_EARLY
+        }
+        val latest = p.latestEnd
+        if (latest != null && latest.strength == PreferenceStrength.REQUIRED && weekly.any { (it.end ?: 0) > latest.minutes }) {
+            reasons += ScheduleFilterReason.PREF_ENDS_TOO_LATE
+        }
+        if (p.daysOffStrength == PreferenceStrength.REQUIRED && !p.daysOff.isEmpty && weekly.any { !it.days.isDisjoint(p.daysOff) }) {
+            reasons += ScheduleFilterReason.PREF_DAY_OFF
+        }
+        if (p.blockedTimes.any { it.isActive && it.strength == PreferenceStrength.REQUIRED && overlaps(it, weekly) }) {
+            reasons += ScheduleFilterReason.BLOCKED_TIME
+        }
+        if (p.format != FormatPreference.NO_PREFERENCE && p.formatStrength == PreferenceStrength.REQUIRED &&
+            SchedulePreferences.formatOf(section).mismatch(p.format) > 0
+        ) {
+            reasons += ScheduleFilterReason.PREF_FORMAT
+        }
+        if (p.campus != null && p.campusStrength == PreferenceStrength.REQUIRED && !section.isOnline &&
+            !ScheduleGenerator.hasNoCampus(section) && section.campus != p.campus
+        ) {
+            reasons += ScheduleFilterReason.PREF_CAMPUS
+        }
         when (p.seats) {
             SeatPolicy.ANY -> Unit
-            SeatPolicy.OPEN_ONLY -> if (section.seatCapacity > 0 && section.seatsRemaining <= 0) reasons += "seats"
-            SeatPolicy.WAITLIST_OK -> if (section.seatCapacity > 0 && section.seatsRemaining <= 0 && section.waitlistRemaining <= 0) reasons += "seats"
+            SeatPolicy.OPEN_ONLY -> if (isFull(section)) reasons += ScheduleFilterReason.PREF_SEATS
+            SeatPolicy.WAITLIST_OK -> if (isFull(section) && section.waitlistRemaining <= 0) reasons += ScheduleFilterReason.PREF_SEATS
         }
-        if (p.maxMinutesPerDay != null) {
+        p.maxMinutesPerDay?.let { cap ->
             val perDay = IntArray(7)
-            for (m in weekly) {
-                val dur = (m.end ?: 0) - (m.start ?: 0)
-                for (d in m.days.indices) perDay[d] += dur
-            }
-            if (perDay.any { it > p.maxMinutesPerDay }) reasons += "too long a day"
+            for (interval in ScheduleInterval.intervals(section)) perDay[interval.day] += interval.end - interval.start
+            if (perDay.any { it > cap }) reasons += ScheduleFilterReason.PREF_WORKLOAD
         }
         return reasons
     }
+
+    fun isFull(section: CourseSection) = section.seatCapacity > 0 && section.seatsRemaining <= 0
 
     fun tooClose(a: CourseSection, aMeetings: List<Meeting>, b: CourseSection, bMeetings: List<Meeting>, minutes: Int): Boolean {
         if (minutes <= 0 || a.isOnline || b.isOnline) return false
@@ -717,72 +765,215 @@ object SchedulePreferenceRules {
         return false
     }
 
-    private fun overlaps(block: BlockedTime, meetings: List<Meeting>) =
-        meetings.any { m ->
-            val s = m.start ?: return@any false
-            val e = m.end ?: return@any false
-            block.overlaps(m.days, s, e)
-        }
-
-    fun sectionScore(section: CourseSection, p: SchedulePreferences): Double {
+    fun sectionScore(section: CourseSection, intervals: List<ScheduleInterval>, p: SchedulePreferences): Double {
         var score = 0.0
-        val weekly = section.weeklyMeetings
         if (p.hasTimeOfDayPreference) {
-            for (m in weekly) {
-                val s = m.start ?: continue
-                val e = m.end ?: continue
-                val days = m.days.count
+            for (interval in intervals) {
                 for (band in TimeBand.entries) {
-                    val pref = p.band(band)
-                    if (pref == TimePreference.OKAY) continue
-                    val minutes = band.overlap(s, e) * days
+                    val preference = p.band(band)
+                    if (preference == TimePreference.OKAY) continue
+                    val minutes = band.overlap(interval.start, interval.end)
                     if (minutes <= 0) continue
-                    val perHour = if (pref == TimePreference.PREFER) 3.0 else -6.0
+                    val perHour = if (preference == TimePreference.PREFER) ScheduleScoring.PREFERRED_BAND_PER_HOUR else ScheduleScoring.AVOIDED_BAND_PER_HOUR
                     score += perHour * minutes / 60.0
                 }
             }
         }
         val early = p.earliestStart
         if (early != null && early.strength == PreferenceStrength.PREFERRED) {
-            for (m in weekly) if ((m.start ?: Int.MAX_VALUE) < early.minutes) score -= min(20.0, 4.0 + (early.minutes - (m.start ?: 0)) / 10.0)
+            for (interval in intervals) {
+                if (interval.start < early.minutes) score -= softLimitPenalty(early.minutes - interval.start)
+            }
         }
         val late = p.latestEnd
         if (late != null && late.strength == PreferenceStrength.PREFERRED) {
-            for (m in weekly) if ((m.end ?: 0) > late.minutes) score -= min(20.0, 4.0 + ((m.end ?: 0) - late.minutes) / 10.0)
+            for (interval in intervals) {
+                if (interval.end > late.minutes) score -= softLimitPenalty(interval.end - late.minutes)
+            }
         }
-        if (p.format != FormatPreference.NO_PREFERENCE) score -= 8.0 * SchedulePreferences.formatOf(section).mismatch(p.format)
-        if (p.campus != null && p.campusStrength == PreferenceStrength.PREFERRED && !section.isOnline && !ScheduleGenerator.hasNoCampus(section) && section.campus != p.campus) score -= 10
-        val names = (section.instructors ?: emptyList()).map { it.name.lowercase(Locale.US) }.toSet()
-        if (names.isNotEmpty()) {
-            if (p.preferredInstructors.any { it.lowercase(Locale.US) in names }) score += 5
-            if (p.avoidedInstructors.any { it.lowercase(Locale.US) in names }) score -= 15
+        for (block in p.blockedTimes) {
+            if (!block.isActive || block.strength != PreferenceStrength.PREFERRED) continue
+            for (interval in intervals) {
+                if (block.overlaps(DaySet.of(interval.day), interval.start, interval.end)) score -= ScheduleScoring.SOFT_BLOCKED_PER_MEETING
+            }
+        }
+        if (p.format != FormatPreference.NO_PREFERENCE) {
+            score -= ScheduleScoring.FORMAT_MISMATCH_PER_SECTION * SchedulePreferences.formatOf(section).mismatch(p.format)
+        }
+        if (p.campus != null && p.campusStrength == PreferenceStrength.PREFERRED && !section.isOnline &&
+            !ScheduleGenerator.hasNoCampus(section) && section.campus != p.campus
+        ) {
+            score -= ScheduleScoring.CAMPUS_MISMATCH_PER_SECTION
+        }
+        if (p.preferredInstructors.isNotEmpty() || p.avoidedInstructors.isNotEmpty()) {
+            val names = (section.instructors ?: emptyList()).map { it.name.lowercase(Locale.US) }.toSet()
+            if (names.isNotEmpty()) {
+                if (p.preferredInstructors.any { it.lowercase(Locale.US) in names }) score += ScheduleScoring.PREFERRED_INSTRUCTOR_PER_SECTION
+                if (p.avoidedInstructors.any { it.lowercase(Locale.US) in names }) score += ScheduleScoring.AVOIDED_INSTRUCTOR_PER_SECTION
+            }
         }
         return score
     }
 
-    fun reasons(sections: List<CourseSection>, p: SchedulePreferences): List<ScheduleReason> {
+    private fun softLimitPenalty(minutesOutside: Int) =
+        min(ScheduleScoring.SOFT_LIMIT_CAP, ScheduleScoring.SOFT_LIMIT_BASE + minutesOutside / 10.0)
+
+    fun reasons(
+        sections: List<CourseSection>,
+        p: SchedulePreferences,
+        maxBenefits: Int = 4,
+        maxCaveats: Int = 2,
+    ): List<ScheduleReason> {
         if (p.isDefault || sections.isEmpty()) return emptyList()
-        val out = mutableListOf<ScheduleReason>()
-        val days = sections.flatMap { it.weeklyMeetings }.fold(DaySet(0)) { acc, m -> acc.union(m.days) }
-        if (!p.daysOff.isEmpty && days.isDisjoint(p.daysOff)) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, SchedulePreferences.daysOffPhrase(p.daysOff))
-        else if (!p.daysOff.isEmpty && p.daysOffStrength == PreferenceStrength.PREFERRED && !days.isDisjoint(p.daysOff)) {
-            out += ScheduleReason(ScheduleReason.Kind.CAVEAT, "Meets on a day you'd rather have off")
+        val table = ScheduleBuildingTable()
+        val intervals = ArrayList<ScheduleInterval>()
+        for (section in sections) intervals += ScheduleInterval.intervals(section, table)
+        val options = ScheduleMeasureOptions()
+        if (p.breaks == BreakPreference.AVOID_BACK_TO_BACK) options.backToBackBelow = SchedulePreferences.BACK_TO_BACK_MINUTES
+        if (p.breaks == BreakPreference.AT_LEAST) options.travelMinutes = p.minimumBreakMinutes
+        options.lunch = p.lunch
+        val measure = ScheduleMeasure.measure(intervals, options)
+        val hasClasses = measure.classDays > 0
+        val good = ArrayList<ScheduleReason>()
+        val bad = ArrayList<ScheduleReason>()
+        fun pro(text: String, symbol: String) { good += ScheduleReason(ScheduleReason.Kind.BENEFIT, text, symbol) }
+        fun con(text: String, symbol: String) { bad += ScheduleReason(ScheduleReason.Kind.CAVEAT, text, symbol) }
+
+        if (hasClasses && !p.daysOff.isEmpty) {
+            val used = DaySet(measure.classDayMask and p.daysOff.rawValue)
+            val free = DaySet(p.daysOff.rawValue and used.rawValue.inv() and 0x7F)
+            if (!free.isEmpty) pro(SchedulePreferences.daysOffPhrase(free), "calendar.badge.minus")
+            if (!used.isEmpty && p.daysOffStrength == PreferenceStrength.PREFERRED) {
+                con("Class on ${used.indices.joinToString(", ") { DaySet.SHORT[it] }}", "calendar.badge.exclamationmark")
+            }
         }
-        p.earliestStart?.let { limit ->
-            val earliest = sections.flatMap { it.weeklyMeetings }.mapNotNull { it.start }.minOrNull()
-            if (earliest != null && earliest >= limit.minutes) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, "Nothing before ${SchedulePreferences.shortTime(limit.minutes)}")
-            else if (earliest != null && limit.strength == PreferenceStrength.PREFERRED) out += ScheduleReason(ScheduleReason.Kind.CAVEAT, "Starts ${TimeOfDay.label(earliest)}")
+        val earliestLimit = p.earliestStart
+        if (hasClasses && earliestLimit != null) {
+            if (measure.earliestStart >= earliestLimit.minutes) pro("No classes before ${SchedulePreferences.shortTime(earliestLimit.minutes)}", "sunrise")
+            else if (earliestLimit.strength == PreferenceStrength.PREFERRED) con("Starts ${TimeOfDay.label(measure.earliestStart)}", "sunrise")
         }
-        p.latestEnd?.let { limit ->
-            val latest = sections.flatMap { it.weeklyMeetings }.mapNotNull { it.end }.maxOrNull()
-            if (latest != null && latest <= limit.minutes) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, "Done by ${SchedulePreferences.shortTime(limit.minutes)}")
-            else if (latest != null && limit.strength == PreferenceStrength.PREFERRED) out += ScheduleReason(ScheduleReason.Kind.CAVEAT, "Ends ${TimeOfDay.label(latest)}")
+        val latestLimit = p.latestEnd
+        if (hasClasses && latestLimit != null) {
+            if (measure.latestEnd <= latestLimit.minutes) pro("Done by ${SchedulePreferences.shortTime(latestLimit.minutes)}", "sunset")
+            else if (latestLimit.strength == PreferenceStrength.PREFERRED) con("Ends ${TimeOfDay.label(measure.latestEnd)}", "sunset")
         }
-        if (p.preferredBands.isNotEmpty()) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, SchedulePreferences.bandPhrase(p.preferredBands).replaceFirstChar { it.titlecase(Locale.US) })
-        if (p.format == FormatPreference.ONLINE && sections.all { it.isOnline }) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, "Online")
-        if (p.format == FormatPreference.IN_PERSON && sections.none { it.isOnline }) out += ScheduleReason(ScheduleReason.Kind.BENEFIT, "In person")
-        return out.take(6)
+        if (hasClasses) {
+            when (p.dayLayout) {
+                DayLayout.NO_PREFERENCE -> Unit
+                DayLayout.FEWER_DAYS -> {
+                    val days = if (measure.campusDays > 0) measure.campusDays else measure.classDays
+                    if (days <= 3) pro(if (days == 1) "1 day on campus" else "$days days on campus", "calendar")
+                }
+                DayLayout.SPREAD_OUT -> if (measure.classDays >= 4) pro("Spread over ${measure.classDays} days", "calendar")
+            }
+            if (p.gaps == GapPreference.COMPACT && measure.gapMinutes <= 30) pro("Short gaps", "rectangle.compress.vertical")
+        }
+        if (hasClasses && measure.totalMinutes > 0) {
+            fun minutesIn(bands: List<TimeBand>): Int = intervals.sumOf { interval ->
+                bands.sumOf { it.overlap(interval.start, interval.end) }
+            }
+            val preferred = p.preferredBands
+            if (preferred.isNotEmpty()) {
+                val share = minutesIn(preferred).toDouble() / measure.totalMinutes
+                val name = SchedulePreferences.bandPhrase(preferred)
+                if (share >= 0.999) pro("All $name", "sun.max")
+                else if (share >= 0.6) pro("Mostly $name", "sun.max")
+            }
+            val avoided = p.avoidedBands
+            if (avoided.isNotEmpty()) {
+                val name = SchedulePreferences.bandPhrase(avoided)
+                if (minutesIn(avoided) == 0) pro("No $name", "nosign") else con("Includes $name", "clock")
+            }
+        }
+        if (hasClasses && p.lunch != null) {
+            val free = measure.classDays - measure.lunchMisses
+            when {
+                measure.lunchMisses == 0 -> pro("Lunch free every day", "fork.knife")
+                free * 2 >= measure.classDays -> pro("Lunch free most days", "fork.knife")
+                else -> con("Lunch often busy", "fork.knife")
+            }
+        }
+        if (hasClasses) {
+            when (p.breaks) {
+                BreakPreference.FINE -> Unit
+                BreakPreference.AVOID_BACK_TO_BACK -> {
+                    if (measure.backToBack == 0) pro("No back-to-back classes", "figure.walk")
+                    else con(if (measure.backToBack == 1) "1 back-to-back" else "${measure.backToBack} back-to-back", "figure.walk")
+                }
+                BreakPreference.AT_LEAST -> {
+                    if (measure.tightTransitions == 0) pro("Time to walk between classes", "figure.walk")
+                    else con("Tight between buildings", "figure.walk")
+                }
+            }
+        }
+        if (p.preferredInstructors.isNotEmpty() || p.avoidedInstructors.isNotEmpty()) {
+            fun names(wanted: List<String>): List<String> {
+                val set = wanted.map { it.lowercase(Locale.US) }.toSet()
+                val result = ArrayList<String>()
+                for (section in sections) {
+                    for (instructor in section.instructors ?: emptyList()) {
+                        if (instructor.name.lowercase(Locale.US) in set && instructor.displayName !in result) result += instructor.displayName
+                    }
+                }
+                return result
+            }
+            val liked = names(p.preferredInstructors)
+            if (liked.size == 1) pro("With ${liked[0]}", "person.fill")
+            else if (liked.size > 1) pro("With ${liked.size} preferred instructors", "person.2.fill")
+            val disliked = names(p.avoidedInstructors)
+            if (disliked.isNotEmpty()) {
+                con(if (disliked.size == 1) "With ${disliked[0]}" else "With ${disliked.size} avoided instructors", "person.fill.xmark")
+            }
+        }
+        if (p.format != FormatPreference.NO_PREFERENCE) {
+            val formats = sections.map { SchedulePreferences.formatOf(it) }
+            val deliveries = formats.filter { it != SectionFormat.OTHER }
+            if (deliveries.isNotEmpty()) {
+                if (deliveries.all { it.mismatch(p.format) == 0.0 }) pro("All ${formatTitle(p.format).lowercase(Locale.US)}", if (p.format == FormatPreference.ONLINE) "wifi" else "building.2")
+                else if (p.formatStrength == PreferenceStrength.PREFERRED) con("Not all ${formatTitle(p.format).lowercase(Locale.US)}", "wifi")
+            }
+        }
+        if (p.campus != null) {
+            val campus = p.campus
+            val onCampus = sections.filter { !it.isOnline && !ScheduleGenerator.hasNoCampus(it) }
+            if (onCampus.isNotEmpty()) {
+                if (onCampus.all { it.campus == campus }) pro("$campus campus", "mappin.and.ellipse")
+                else if (p.campusStrength == PreferenceStrength.PREFERRED) con("Includes another campus", "mappin.and.ellipse")
+            }
+        }
+        when (p.seats) {
+            SeatPolicy.ANY -> Unit
+            SeatPolicy.OPEN_ONLY -> pro("All sections open", "chair.lounge")
+            SeatPolicy.WAITLIST_OK -> {
+                val waitlisted = sections.count { isFull(it) }
+                if (waitlisted == 0) pro("All sections open", "chair.lounge")
+                else con(if (waitlisted == 1) "1 waitlisted section" else "$waitlisted waitlisted sections", "chair.lounge")
+            }
+        }
+        for (block in p.blockedTimes) {
+            if (!block.isActive || block.strength != PreferenceStrength.PREFERRED) continue
+            val touches = intervals.any { block.overlaps(DaySet.of(it.day), it.start, it.end) }
+            if (touches) con("Overlaps ${block.label}", "calendar.badge.exclamationmark")
+        }
+        fun unique(reasons: List<ScheduleReason>): List<ScheduleReason> {
+            val seen = HashSet<String>()
+            return reasons.filter { seen.add(it.id) }
+        }
+        return unique(good).take(maxBenefits) + unique(bad).take(maxCaveats)
     }
+
+    private fun overlaps(block: BlockedTime, meetings: List<Meeting>) = meetings.any { meeting ->
+        val start = meeting.start ?: return@any false
+        val end = meeting.end ?: return@any false
+        block.overlaps(meeting.days, start, end)
+    }
+}
+
+private fun formatTitle(format: FormatPreference) = when (format) {
+    FormatPreference.NO_PREFERENCE -> "No preference"
+    FormatPreference.IN_PERSON -> "In person"
+    FormatPreference.HYBRID -> "Hybrid"
+    FormatPreference.ONLINE -> "Online"
 }
 
 object ScheduleExporter {
