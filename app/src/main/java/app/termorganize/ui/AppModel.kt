@@ -166,6 +166,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         _index.value = CatalogIndex.build(catalog)
         _status.value = ""
         _syncLabel.value = ""
+        if (_availableTerms.value.none { it.code == catalog.term.code }) {
+            _availableTerms.value = (listOf(catalog.term) + _availableTerms.value).distinctBy { it.code }
+        }
         publishWidget()
         val courses = catalog.courses
         val code = catalog.term.code
@@ -243,8 +246,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             val remote = runCatching { BannerClient.shared { it.fetchTerms(40) } }
             val terms = remote.getOrElse { catalogs.loadRemoteTerms() }
             if (remote.isSuccess) catalogs.saveRemoteTerms(terms)
+            val open = _index.value?.term
             val shown = TermMenu.listed(terms, catalogs.localCodes())
-            _availableTerms.value = shown.ifEmpty { listOfNotNull(_index.value?.term) }
+            val withOpen = if (open != null && shown.none { it.code == open.code }) listOf(open) + shown else shown
+            _availableTerms.value = withOpen.ifEmpty { listOfNotNull(open) }
             _otherTerms.value = terms.sortedByDescending { it.code }
         }
     }
