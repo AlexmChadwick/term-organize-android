@@ -6,6 +6,7 @@ package app.termorganize
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.compose.ui.test.SemanticsNodeInteractionsProvider
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.AndroidComposeTestRule
@@ -18,7 +19,11 @@ import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.rules.ActivityScenarioRule
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.RuleChain
+import org.junit.rules.TestRule
+import org.junit.runner.Description
 import org.junit.runner.RunWith
+import org.junit.runners.model.Statement
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
@@ -29,18 +34,32 @@ import java.io.File
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w411dp-h840dp-mdpi")
 class UiSweepPhoneTest {
-    @get:Rule val rule = createAndroidComposeRule<MainActivity>()
+    private val compose = createAndroidComposeRule<MainActivity>()
 
-    @Test fun lightAndDark() = sweep(rule, "phone")
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-phone.db")).around(compose)
+
+    @Test fun lightAndDark() = sweep(compose, "phone")
 }
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w1280dp-h900dp-mdpi")
 class UiSweepTabletTest {
-    @get:Rule val rule = createAndroidComposeRule<MainActivity>()
+    private val compose = createAndroidComposeRule<MainActivity>()
 
-    @Test fun lightAndDark() = sweep(rule, "tablet")
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-tablet.db")).around(compose)
+
+    @Test fun lightAndDark() = sweep(compose, "tablet")
+}
+
+private class FreshDatabase(private val name: String) : TestRule {
+    override fun apply(base: Statement, description: Description): Statement = object : Statement() {
+        override fun evaluate() {
+            System.setProperty("termorganize.freshdb", "1")
+            System.setProperty("termorganize.dbname", name)
+            base.evaluate()
+        }
+    }
 }
 
 private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>, form: String) {
@@ -53,7 +72,9 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     step("theme-light") {
         rule.onNodeWithText("More").performClick()
         rule.onNodeWithText("Settings and legal").performClick()
-        rule.onNode(hasTestTag("dynamic-color"), useUnmergedTree = true).performClick()
+        val dynamic = rule.onNode(hasTestTag("dynamic-color"), useUnmergedTree = true)
+        val dynamicOn = runCatching { dynamic.assertIsOn() }.isSuccess
+        if (dynamicOn) dynamic.performClick()
         rule.onNodeWithText("Light").performClick()
         rule.waitForIdle()
     }
@@ -94,10 +115,14 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     scrollTo(rule, "Alert me if a seat opens")
     capture(rule, "$form-light", "course-sections")
     goBack(rule)
+    capture(rule, "$form-light", "after-back")
     step("search-none") {
+        if (!tagged(rule, "search-field")) rule.onNodeWithText("Search").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
         replace(rule, "search-field", "zzzznotacourse")
-        rule.waitForIdle()
+        rule.waitUntil(timeoutMillis = 10_000) {
+            rule.onAllNodes(hasText("No courses match", substring = true)).fetchSemanticsNodes().isNotEmpty()
+        }
     }
     capture(rule, "$form-light", "search-none")
     step("schedule-empty") {
@@ -148,6 +173,28 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitForIdle()
     }
     capture(rule, "$form-light", "watch-empty")
+    step("theme-dark-empty") {
+        rule.onNodeWithText("More").performClick()
+        rule.onNodeWithText("Settings and legal").performClick()
+        rule.onNodeWithText("Dark").performClick()
+        rule.waitForIdle()
+    }
+    rule.onNodeWithText("Home").performClick()
+    rule.waitForIdle()
+    capture(rule, "$form-dark", "home")
+    rule.onNodeWithText("Schedule").performClick()
+    capture(rule, "$form-dark", "schedule-empty")
+    rule.onNodeWithText("Degree").performClick()
+    capture(rule, "$form-dark", "degree-empty")
+    rule.onNodeWithText("More").performClick()
+    rule.onNodeWithText("Seat alerts").performClick()
+    capture(rule, "$form-dark", "watch-empty")
+    step("theme-light-again") {
+        rule.onNodeWithText("More").performClick()
+        rule.onNodeWithText("Settings and legal").performClick()
+        rule.onNodeWithText("Light").performClick()
+        rule.waitForIdle()
+    }
     step("add-course") {
         rule.onNodeWithText("Search").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
@@ -170,14 +217,17 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         scrollTo(rule, "Generate schedules")
         rule.onNodeWithText("Generate schedules").performClick()
         rule.waitForIdle()
-        if (rule.onAllNodes(hasText("combinations", substring = true)).fetchSemanticsNodes().isNotEmpty()) {
-            scrollTo(rule, "combinations")
+        rule.waitUntil(timeoutMillis = 10_000) {
+            rule.onAllNodes(hasText("Option 1")).fetchSemanticsNodes().isNotEmpty() ||
+                rule.onAllNodes(hasText("Nothing fit", substring = true)).fetchSemanticsNodes().isNotEmpty()
         }
+        if (rule.onAllNodes(hasText("Option 1")).fetchSemanticsNodes().isNotEmpty()) scrollTo(rule, "Option 1")
     }
     capture(rule, "$form-light", "schedule-generated")
     if (tagged(rule, "schedule-option")) {
         step("pick") {
-            rule.onAllNodes(hasTestTag("schedule-option"), useUnmergedTree = true)[0].performClick()
+            scrollTo(rule, "Option 1")
+            rule.onNodeWithText("Option 1").performClick()
             rule.waitForIdle()
             scrollTo(rule, "New plan")
         }
@@ -205,12 +255,19 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitForIdle()
     }
     capture(rule, "$form-dark", "settings")
+    scrollTo(rule, "Version 1.0")
+    capture(rule, "$form-dark", "settings-legal")
     rule.onNodeWithText("Home").performClick()
     rule.waitForIdle()
-    capture(rule, "$form-dark", "home")
+    capture(rule, "$form-dark", "home-upcoming")
     rule.onNodeWithText("Search").performClick()
     rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
     capture(rule, "$form-dark", "search-empty")
+    replace(rule, "search-field", "zzzznotacourse")
+    rule.waitUntil(timeoutMillis = 10_000) {
+        rule.onAllNodes(hasText("No courses match", substring = true)).fetchSemanticsNodes().isNotEmpty()
+    }
+    capture(rule, "$form-dark", "search-none")
     replace(rule, "search-field", "CS 3000")
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Algorithms", substring = true)).fetchSemanticsNodes().isNotEmpty() }
     capture(rule, "$form-dark", "search-results")
@@ -222,6 +279,9 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     rule.onNodeWithText("Algorithms", substring = true).performClick()
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Prerequisites")).fetchSemanticsNodes().isNotEmpty() }
     capture(rule, "$form-dark", "course")
+    scrollTo(rule, "Alert me if a seat opens")
+    capture(rule, "$form-dark", "course-sections")
+    goBack(rule)
     rule.onNodeWithText("Schedule").performClick()
     rule.waitForIdle()
     capture(rule, "$form-dark", "schedule")
@@ -232,9 +292,21 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     capture(rule, "$form-dark", "more")
     rule.onNodeWithText("Free rooms").performClick()
     capture(rule, "$form-dark", "rooms")
+    if (tagged(rule, "room-row")) {
+        rule.onAllNodes(hasTestTag("room-row"), useUnmergedTree = true)[0].performClick()
+        rule.waitForIdle()
+        capture(rule, "$form-dark", "room")
+        goBack(rule)
+    }
     rule.onNodeWithText("More").performClick()
     rule.onNodeWithText("Professors").performClick()
     capture(rule, "$form-dark", "professors")
+    if (tagged(rule, "professor-row")) {
+        rule.onAllNodes(hasTestTag("professor-row"), useUnmergedTree = true)[0].performClick()
+        rule.waitForIdle()
+        capture(rule, "$form-dark", "professor")
+        goBack(rule)
+    }
     rule.onNodeWithText("More").performClick()
     rule.onNodeWithText("Seat alerts").performClick()
     capture(rule, "$form-dark", "watch")

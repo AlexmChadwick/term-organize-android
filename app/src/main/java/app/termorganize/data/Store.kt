@@ -36,8 +36,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
 
     companion object {
-        fun create(context: Context): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, "term-organize.db").build()
+        fun create(context: Context): AppDatabase {
+            val name = System.getProperty("termorganize.dbname") ?: "term-organize.db"
+            return Room.databaseBuilder(context, AppDatabase::class.java, name).build()
+        }
     }
 }
 

@@ -11,6 +11,9 @@ class TermOrganizeApp : Application(), Configuration.Provider {
     override val workManagerConfiguration: Configuration = Configuration.Builder().build()
 
     override fun onCreate() {
+        if (System.getProperty("termorganize.freshdb") == "1") {
+            deleteDatabase(System.getProperty("termorganize.dbname") ?: "term-organize.db")
+        }
         super.onCreate()
         SeatCheckWorker.schedule(this)
     }

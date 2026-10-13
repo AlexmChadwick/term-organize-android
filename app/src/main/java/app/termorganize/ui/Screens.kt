@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -36,6 +37,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.layout.layout
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -57,7 +59,10 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -172,8 +177,11 @@ private fun EmptyText(text: String) {
 
 @Composable
 private fun BackTitle(title: String, back: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = back, modifier = Modifier.offset(x = (-8).dp).testTag("back")) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 4.dp, end = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = back, modifier = Modifier.testTag("back")) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
         }
         Text(
@@ -182,6 +190,18 @@ private fun BackTitle(title: String, back: () -> Unit) {
             modifier = Modifier.weight(1f).semantics { heading() },
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun DetailPage(title: String, back: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxSize()) {
+        BackTitle(title, back)
+        Column(
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).padding(top = 4.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content,
         )
     }
 }
@@ -222,6 +242,23 @@ fun TermOrganizeRoot(
             route.startsWith("more") || route.startsWith("room") || route.startsWith("professor") || route.startsWith("watch") || route.startsWith("settings") -> Tab.More
             else -> Tab.Home
         }
+        val navScheme = MaterialTheme.colorScheme
+        val navItemColors = NavigationSuiteDefaults.itemColors(
+            navigationBarItemColors = NavigationBarItemDefaults.colors(
+                selectedIconColor = navScheme.onSecondaryContainer,
+                selectedTextColor = navScheme.onSecondaryContainer,
+                indicatorColor = navScheme.secondaryContainer,
+                unselectedIconColor = navScheme.onSurfaceVariant,
+                unselectedTextColor = navScheme.onSurfaceVariant,
+            ),
+            navigationRailItemColors = NavigationRailItemDefaults.colors(
+                selectedIconColor = navScheme.onSecondaryContainer,
+                selectedTextColor = navScheme.onSecondaryContainer,
+                indicatorColor = navScheme.secondaryContainer,
+                unselectedIconColor = navScheme.onSurfaceVariant,
+                unselectedTextColor = navScheme.onSurfaceVariant,
+            ),
+        )
         NavigationSuiteScaffold(
             modifier = Modifier.semantics { testTagsAsResourceId = true },
             navigationSuiteItems = {
@@ -242,6 +279,7 @@ fun TermOrganizeRoot(
                             )
                         },
                         label = { Text(item.label) },
+                        colors = navItemColors,
                     )
                 }
             },
@@ -302,7 +340,18 @@ private fun HomeScreen(model: AppModel, status: String, loading: Boolean, open: 
         Text("Term Organize", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
         Text(index?.term?.name ?: "Catalog", style = MaterialTheme.typography.titleLarge)
         if (terms.isNotEmpty()) {
-            ChipFlow {
+            Row(
+                Modifier
+                    .layout { measurable, constraints ->
+                        val extra = 16.dp.roundToPx()
+                        val placeable = measurable.measure(constraints.copy(maxWidth = constraints.maxWidth + extra * 2))
+                        layout(constraints.maxWidth, placeable.height) { placeable.placeRelative(-extra, 0) }
+                    }
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 terms.forEach { term ->
                     FilterChip(
                         selected = term.code == index?.term?.code,
@@ -329,8 +378,13 @@ private fun HomeScreen(model: AppModel, status: String, loading: Boolean, open: 
                 Text("Up next", style = MaterialTheme.typography.titleMedium)
                 if (next.isEmpty()) EmptyText("No class on the primary schedule. Build one and it shows up here and on the home-screen widget.")
                 next.forEach { item ->
-                    val whenLabel = item.start.format(DateTimeFormatter.ofPattern("EEE h:mm a"))
-                    Text("${item.meeting.courseCode} · $whenLabel · ${item.meeting.location}", style = MaterialTheme.typography.bodyLarge)
+                    val whenLabel = item.start.format(DateTimeFormatter.ofPattern("EEE, MMM d · h:mm a"))
+                    Text(
+                        "${item.meeting.courseCode} · $whenLabel · ${item.meeting.location}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
@@ -649,11 +703,7 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
     var refreshing by remember { mutableStateOf(false) }
     val shown = live ?: sections
     val older by model.olderNote.collectAsState()
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp).padding(bottom = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        BackTitle(course.code, back)
+    DetailPage(course.code, back) {
         Text(course.title, style = MaterialTheme.typography.titleLarge)
         Text(
             "${course.creditsLabel}${course.college?.let { " · $it" } ?: ""}",
@@ -1395,22 +1445,24 @@ private fun RoomsScreen(model: AppModel, open: (String) -> Unit) {
 @Composable
 private fun RoomRoute(id: String, model: AppModel, back: () -> Unit) {
     val room = model.index.collectAsState().value?.buildings?.flatMap { it.rooms }?.firstOrNull { it.id == id }
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp).padding(bottom = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        BackTitle(room?.label ?: "Room", back)
+    DetailPage(room?.label ?: "Room", back) {
         if (room == null) {
             EmptyText("Room not found.")
-            return
+            return@DetailPage
         }
         Text(room.buildingName, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Booked this term", style = MaterialTheme.typography.titleMedium)
         if (room.bookings.isEmpty()) EmptyText("Nothing is booked in the bundled catalog.")
         room.bookings.sortedWith(compareBy<app.termorganize.logic.search.RoomSchedule.Booking> { it.days.rawValue }.thenBy { it.start }).forEach { booking ->
-            Text(
-                "${booking.days.compactLabel} ${TimeOfDay.rangeLabel(booking.start, booking.end)} · ${booking.course.description}",
-                style = MaterialTheme.typography.bodyLarge,
-            )
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "${booking.days.compactLabel} ${TimeOfDay.rangeLabel(booking.start, booking.end)}",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(booking.course.description, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
     }
 }
@@ -1461,14 +1513,10 @@ private fun ProfessorRoute(encoded: String, model: AppModel, back: () -> Unit) {
     val index = model.index.collectAsState().value
     val person = index?.instructor(name)
     val context = LocalContext.current
-    Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp).padding(bottom = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        BackTitle(person?.displayName ?: "Professor", back)
+    DetailPage(person?.displayName ?: "Professor", back) {
         if (index == null || person == null) {
             EmptyText("Professor not found.")
-            return
+            return@DetailPage
         }
         val sections = ProfessorPage.sections(person, index)
         Text(ProfessorPage.summaryText(sections), style = MaterialTheme.typography.bodyLarge)
