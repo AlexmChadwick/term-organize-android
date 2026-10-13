@@ -427,6 +427,18 @@ private fun FilterSheet(
                 FilterChip(selected = filters.instruction == mode, onClick = { onChange(filters.copy(instruction = mode)) }, label = { Text(mode.label) })
             }
         }
+        Text("Starts after")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(null to "Any", 8 * 60 to "8:00", 9 * 60 to "9:00", 10 * 60 to "10:00", 12 * 60 to "12:00").forEach { (value, label) ->
+                FilterChip(selected = filters.startsAfter == value, onClick = { onChange(filters.copy(startsAfter = value)) }, label = { Text(label) })
+            }
+        }
+        Text("Ends by")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(null to "Any", 12 * 60 to "12:00", 15 * 60 to "3:00", 17 * 60 to "5:00", 19 * 60 to "7:00").forEach { (value, label) ->
+                FilterChip(selected = filters.endsBefore == value, onClick = { onChange(filters.copy(endsBefore = value)) }, label = { Text(label) })
+            }
+        }
         Text("Days the section may meet")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             DaySet.SHORT.forEachIndexed { day, label ->
