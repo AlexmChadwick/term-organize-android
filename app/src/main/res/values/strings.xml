@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Term Organize</string>
+    <string name="disclaimer">Unofficial, not affiliated with Northeastern or Sandbox. Course information comes from Northeastern’s public class search and academic catalog. It is not an official audit, registration, or advising tool.</string>
+    <string name="shortcut_search">Search courses</string>
+    <string name="shortcut_schedule">My schedule</string>
+    <string name="shortcut_next">Next class</string>
+    <string name="widget_up_next">Up next</string>
+    <string name="widget_agenda">Today</string>
+</resources>
