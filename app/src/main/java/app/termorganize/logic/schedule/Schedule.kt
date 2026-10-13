@@ -63,13 +63,41 @@ data class BlockedTime(
     fun overlaps(meetingDays: DaySet, meetingStart: Int, meetingEnd: Int): Boolean =
         !days.isDisjoint(meetingDays) && meetingStart < end && start < meetingEnd
     val summary: String get() = "${days.shortLabel} ${TimeOfDay.rangeLabel(start, end)}"
+    val listDetail: String
+        get() {
+            if (!isValid) return if (days.isEmpty) "Choose the days" else "Check the times"
+            return summary + when {
+                !isEnabled -> " · Off"
+                strength == PreferenceStrength.PREFERRED -> " · If I must"
+                else -> ""
+            }
+        }
 }
 @Serializable
 data class CreditTarget(val lower: Int, val upper: Int) {
     val label: String get() = if (lower == upper) "$lower credits" else "$lower–$upper credits"
 }
 
-@Serializable
+/** A part of the preferences survey, for highlighting what a description filled in. */
+sealed class PreferenceField {
+    data class Band(val band: TimeBand) : PreferenceField()
+    data object EarliestStart : PreferenceField()
+    data object LatestEnd : PreferenceField()
+    data object DaysOff : PreferenceField()
+    data object DayLayout : PreferenceField()
+    data object Workload : PreferenceField()
+    data object Gaps : PreferenceField()
+    data object Breaks : PreferenceField()
+    data object Lunch : PreferenceField()
+    data class Blocked(val id: String) : PreferenceField()
+    data object Format : PreferenceField()
+    data object Campus : PreferenceField()
+    data object Seats : PreferenceField()
+    data object Instructors : PreferenceField()
+    data object Credits : PreferenceField()
+}
+
+@Serializable(with = SchedulePreferencesSerializer::class)
 data class SchedulePreferences(
     val timeOfDay: Map<TimeBand, TimePreference> = emptyMap(),
     val earliestStart: TimeLimit? = null,
@@ -198,6 +226,7 @@ data class SchedulePreferences(
             }
             if (lunch != null) parts += "Lunch break"
             maxClassesPerDay?.let { parts += "Up to $it a day" }
+            maxMinutesPerDay?.let { parts += "Up to ${hoursLabel(it)} a day" }
             if (format != FormatPreference.NO_PREFERENCE) parts += format.title()
             campus?.let { parts += it }
             when (seats) {
@@ -205,8 +234,34 @@ data class SchedulePreferences(
                 SeatPolicy.WAITLIST_OK -> parts += "Waitlists OK"
                 SeatPolicy.OPEN_ONLY -> parts += "Open seats"
             }
+            val instructors = preferredInstructors.size + avoidedInstructors.size
+            if (instructors > 0) parts += if (instructors == 1) "1 instructor" else "$instructors instructors"
+            creditTarget?.let { parts += it.label }
             return parts
         }
+
+    fun changedFields(old: SchedulePreferences): Set<PreferenceField> {
+        val changed = LinkedHashSet<PreferenceField>()
+        for (band in TimeBand.entries) if (band(band) != old.band(band)) changed += PreferenceField.Band(band)
+        if (earliestStart != old.earliestStart) changed += PreferenceField.EarliestStart
+        if (latestEnd != old.latestEnd) changed += PreferenceField.LatestEnd
+        if (daysOff != old.daysOff || (!daysOff.isEmpty && daysOffStrength != old.daysOffStrength)) changed += PreferenceField.DaysOff
+        if (dayLayout != old.dayLayout) changed += PreferenceField.DayLayout
+        if (maxClassesPerDay != old.maxClassesPerDay || maxMinutesPerDay != old.maxMinutesPerDay) changed += PreferenceField.Workload
+        if (gaps != old.gaps) changed += PreferenceField.Gaps
+        if (breaks != old.breaks || (breaks == BreakPreference.AT_LEAST && (minimumBreakMinutes != old.minimumBreakMinutes || minimumBreakStrength != old.minimumBreakStrength))) {
+            changed += PreferenceField.Breaks
+        }
+        if (lunch != old.lunch) changed += PreferenceField.Lunch
+        val oldBlocks = old.blockedTimes.associateBy { it.id }
+        for (block in blockedTimes) if (oldBlocks[block.id] != block) changed += PreferenceField.Blocked(block.id)
+        if (format != old.format || (format != FormatPreference.NO_PREFERENCE && formatStrength != old.formatStrength)) changed += PreferenceField.Format
+        if (campus != old.campus || (campus != null && campusStrength != old.campusStrength)) changed += PreferenceField.Campus
+        if (seats != old.seats) changed += PreferenceField.Seats
+        if (preferredInstructors != old.preferredInstructors || avoidedInstructors != old.avoidedInstructors) changed += PreferenceField.Instructors
+        if (creditTarget != old.creditTarget) changed += PreferenceField.Credits
+        return changed
+    }
 
     fun summary(limit: Int = 3): String {
         val parts = summaryParts
@@ -237,6 +292,10 @@ data class SchedulePreferences(
             }
         }
         fun shortTime(minutes: Int) = TimeOfDay.label(minutes).replace(":00", "")
+        fun hoursLabel(minutes: Int): String {
+            val hours = minutes / 60.0
+            return if (minutes % 60 == 0) "${minutes / 60} h" else String.format(Locale.US, "%.1f h", hours)
+        }
         fun daysOffPhrase(days: DaySet): String {
             val indices = days.indices
             return when (indices.size) {
@@ -394,7 +453,9 @@ data class ScheduleCourseInput(
     val excludedCRNs: Set<String> = emptySet(),
     val minCredits: Int = 0,
     val maxCredits: Int = 0,
-)
+) {
+    companion object
+}
 
 data class ScheduleReason(val kind: Kind, val text: String, val symbol: String = "") {
     enum class Kind { BENEFIT, CAVEAT }
@@ -488,6 +549,7 @@ data class ScheduleGenerationResult(
     val diagnostics: ScheduleDiagnostics = ScheduleDiagnostics(),
     val wasCancelled: Boolean = false,
     val elapsedNanos: Long = 0,
+    val noResults: ScheduleNoResults? = null,
 ) {
     val elapsedSeconds: Double get() = elapsedNanos / 1_000_000_000.0
     val isTruncated: Boolean get() = !isExhaustive || schedules.size < totalFound
@@ -635,6 +697,15 @@ object ScheduleGenerator {
                 maxExhaustiveLeaves = 300,
                 maxNodes = 300_000,
                 timeBudget = 0.25,
+                sampleLeaves = 0,
+                sampleTimeBudget = 0.0,
+                allowSampling = false,
+            )
+            val blockerProbe = Limits(
+                maxResults = 1,
+                maxExhaustiveLeaves = 1_000,
+                maxNodes = 250_000,
+                timeBudget = 0.15,
                 sampleLeaves = 0,
                 sampleTimeBudget = 0.0,
                 allowSampling = false,

@@ -8,12 +8,13 @@ The app is free software under the GNU Affero General Public License, version 3 
 
 ## What it does
 
-- Search the bundled Fall 2026 catalog with shorthand (`orgo`, `fundies`, `linalg`), course codes, CRNs, and typo tolerance, plus subject, NUpath, level, seat, day, and instruction filters.
+- Search the open term with shorthand (`orgo`, `fundies`, `linalg`), course codes, CRNs, and typo tolerance, plus subject, NUpath, level, seat, day, and instruction filters. Fall 2026 ships in the app. Other Banner terms download on demand and stay cached. If the main search finds nothing, an AndroidX AppSearch index is checked.
 - Course pages with prerequisite and corequisite trees, “prerequisite for”, sections, seats, and waitlists. Refresh one course from Banner when the network is available, and check older terms.
-- Schedule plans, a week calendar, conflict detection, a preferences survey, a deterministic description of the week (in place of Apple Intelligence), ranked results with reasons, and suggestions when nothing fits.
-- Export a schedule as `.ics`, hand the first meeting to Android Calendar, share a schedule image, and copy CRNs.
+- Schedule plans, a week calendar, conflict detection, a preferences survey, a deterministic description of the week (in place of Apple Intelligence), the full scoring weight table and sampler, ranked results with reasons, and suggestions when nothing fits.
+- Export a schedule as `.ics` with one event per meeting and each final. Add every meeting to Android Calendar (calendar permission), share a schedule image, and copy CRNs.
 - Import a degree-audit “View Plan” PDF (the system picker, or Open with), edit it, check prerequisites and repeats, export the same layout, and autofill a schedule from the matching semester.
-- Load program requirements from catalog.northeastern.edu and run a degree audit, including NUpath, substitutions, waivers, equivalences, and title matches for renumbered courses.
+- Load program requirements from catalog.northeastern.edu and run the degree audit, including the optimal rebalance, NUpath, substitutions, waivers, petition course-number questions, equivalences, and title matches for renumbered courses.
+- Offering history for the last two years, and suggestions to move or swap a course that is not taught in the semester where it is planned.
 - Seat alerts through WorkManager, about every 15 minutes, with a notification when a seat or waitlist spot opens.
 - Free rooms and professor pages with a teaching calendar.
 - Glance home-screen widgets: Up next, and today’s agenda.
@@ -47,11 +48,11 @@ Unit tests load the bundled catalog from `app/src/main/assets/catalog/`. The And
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-There is no emulator image in this environment, so the UI flow was verified with Robolectric instead.
+The home flow is also covered by Robolectric (`AppUiTest`). An Android 34 AOSP ATD image (`system-images;android-34;aosp_atd;x86_64`) can be installed with `sdkmanager` and booted as AVD `nto`. KVM boots of that image hang before the guest kernel on this host. A software boot works with `~/.android/advancedFeatures.ini` disabling `WiFiPacketStream`, `NetsimWebUi`, `NetsimCliUi`, and `Vulkan`, and with `emulator -avd nto -no-window -no-audio -no-boot-anim -gpu off -no-snapshot -no-metrics -accel off -memory 3072 -cores 2 -feature -WiFiPacketStream`. `connectedDebugAndroidTest` needs that emulator (or another device) online. The first catalog decode on that software emulator takes several minutes, so the device test waits for the home screen with UiAutomator instead of the Compose test rule.
 
 ## Data
 
-Plans, the watchlist, and settings are one JSON document in Room (`term-organize.db`). Widget state is `widget-schedule.json` in app files. Nothing is uploaded to a Term Organize server. Live seats come from `nubanner.neu.edu` when you refresh or when a seat check runs. Program requirements come from `catalog.northeastern.edu` when you load a program.
+Plans, the watchlist, and settings are one JSON document in Room (`term-organize.db`). Widget state is `widget-schedule.json` in app files. Downloaded catalogs are `files/catalogs/term-<code>.json`. Offering history is `files/course-info/offering-history.json`. Nothing is uploaded to a Term Organize server. Live seats, term downloads, and offering history come from `nubanner.neu.edu`. Program requirements come from `catalog.northeastern.edu` when you load a program.
 
 ## License
 

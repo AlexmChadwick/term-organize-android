@@ -4,12 +4,28 @@
 
 package app.termorganize
 
+import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
 import app.termorganize.core.model.DaySet
 import app.termorganize.core.model.Instructor
 import app.termorganize.core.model.Meeting
+import app.termorganize.logic.degree.PlanCourse
+import app.termorganize.logic.degree.SchedulePlan
+import app.termorganize.logic.degree.UserData
+import app.termorganize.logic.degree.UserDataStore
+import app.termorganize.logic.degree.UserJson
+import app.termorganize.logic.nl.DraftBlockedTime
+import app.termorganize.logic.nl.DraftBreaks
+import app.termorganize.logic.nl.DraftFormat
+import app.termorganize.logic.nl.DraftLayout
+import app.termorganize.logic.nl.DraftSeats
+import app.termorganize.logic.nl.DraftTime
+import app.termorganize.logic.nl.DraftWeekday
+import app.termorganize.logic.nl.ScheduleAssistant
+import app.termorganize.logic.nl.SchedulePreferencesDraft
 import app.termorganize.logic.schedule.BlockedTime
+import app.termorganize.logic.schedule.PreferenceField
 import app.termorganize.logic.schedule.BreakPreference
 import app.termorganize.logic.schedule.ConflictReason
 import app.termorganize.logic.schedule.CountProblem
@@ -21,7 +37,21 @@ import app.termorganize.logic.schedule.GeneratedSchedule
 import app.termorganize.logic.schedule.LunchBreak
 import app.termorganize.logic.schedule.PreferenceRelaxation
 import app.termorganize.logic.schedule.PreferenceStrength
+import app.termorganize.logic.degree.DegreePlan
+import app.termorganize.logic.degree.DegreePlanCourse
+import app.termorganize.logic.degree.DegreePlanTerm
+import app.termorganize.logic.degree.PlanSeason
+import app.termorganize.logic.degree.PrerequisiteLookup
+import app.termorganize.logic.offering.OfferingHistory
+import app.termorganize.logic.schedule.ScheduleBlockerAnalysis
 import app.termorganize.logic.schedule.ScheduleCourseInput
+import app.termorganize.logic.schedule.SchedulePreferencesContext
+import app.termorganize.logic.schedule.ScheduleReorderOption
+import app.termorganize.logic.schedule.ScheduleReorderSuggestions
+import app.termorganize.logic.schedule.analyzeBlockers
+import app.termorganize.logic.schedule.analyzeEmptyResult
+import app.termorganize.core.model.Term
+import kotlinx.coroutines.runBlocking
 import app.termorganize.logic.schedule.ScheduleFilterReason
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerator
@@ -37,8 +67,15 @@ import app.termorganize.logic.schedule.SeatPolicy
 import app.termorganize.logic.schedule.TimeBand
 import app.termorganize.logic.schedule.TimeLimit
 import app.termorganize.logic.schedule.TimePreference
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.ceil
@@ -920,3 +957,752 @@ private fun tooClose(a: CourseSection, b: CourseSection, minutes: Int): Boolean 
     }
     return false
 }
+
+class SchedulePreferencesModelTests {
+    @Test fun defaultsHaveNoOpinions() {
+        val p = SchedulePreferences()
+        assertTrue(p.isDefault)
+        assertEquals(0, p.activeCount)
+        assertTrue(p.summaryParts.isEmpty())
+        assertEquals("No preferences yet", p.summary())
+    }
+
+    @Test fun settingABandBackToOkayRestoresTheDefault() {
+        var p = SchedulePreferences().withBand(TimeBand.MORNING, TimePreference.PREFER)
+        assertFalse(p.isDefault)
+        p = p.withBand(TimeBand.MORNING, TimePreference.OKAY)
+        assertTrue(p.isDefault)
+    }
+
+    @Test fun summaryReadsLikeTheBrief() {
+        var p = SchedulePreferences(
+            timeOfDay = mapOf(TimeBand.EARLY_MORNING to TimePreference.PREFER, TimeBand.MORNING to TimePreference.PREFER),
+            daysOff = DaySet.FRIDAY,
+            blockedTimes = listOf(
+                BlockedTime(label = "Club", days = DaySet.TUESDAY.union(DaySet.THURSDAY), start = 18 * 60, end = 20 * 60),
+                BlockedTime(label = "Work", days = DaySet.MONDAY, start = 13 * 60, end = 17 * 60),
+            ),
+        )
+        assertEquals(listOf("Mornings", "Fridays off", "2 blocked times"), p.summaryParts)
+        assertEquals("Mornings · Fridays off · 2 blocked times", p.summary())
+        p = p.copy(dayLayout = DayLayout.FEWER_DAYS)
+        assertEquals("Mornings · Fridays off · Fewer days · +1", p.summary(3))
+    }
+
+    @Test fun summaryNamesTheDaysAndTimes() {
+        var p = SchedulePreferences(
+            daysOff = DaySet.MONDAY.union(DaySet.FRIDAY),
+            earliestStart = TimeLimit(10 * 60),
+            latestEnd = TimeLimit(17 * 60 + 30, PreferenceStrength.PREFERRED),
+        )
+        assertEquals(listOf("Nothing before 10 AM", "Prefer done by 5:30 PM", "Mon & Fri off"), p.summaryParts)
+        p = p.withBand(TimeBand.EVENING, TimePreference.AVOID).withBand(TimeBand.NIGHT, TimePreference.AVOID)
+        assertEquals("No evenings", p.summaryParts.first())
+    }
+
+    @Test fun disabledBlocksDontCount() {
+        val p = SchedulePreferences(blockedTimes = listOf(BlockedTime(label = "Work", days = DaySet.MONDAY, start = 600, end = 700, isEnabled = false)))
+        assertTrue(p.activeBlockedTimes.isEmpty())
+        assertEquals(0, p.activeCount)
+        assertTrue(p.summaryParts.isEmpty())
+        assertFalse(p.isDefault)
+    }
+
+    @Test fun everyWishShowsUpInTheSummary() {
+        val wishes = listOf(
+            SchedulePreferences().withBand(TimeBand.NIGHT, TimePreference.AVOID),
+            SchedulePreferences(earliestStart = TimeLimit(600)),
+            SchedulePreferences(latestEnd = TimeLimit(1_020, PreferenceStrength.PREFERRED)),
+            SchedulePreferences(daysOff = DaySet.FRIDAY),
+            SchedulePreferences(dayLayout = DayLayout.SPREAD_OUT),
+            SchedulePreferences(maxClassesPerDay = 2),
+            SchedulePreferences(maxMinutesPerDay = 240),
+            SchedulePreferences(gaps = GapPreference.FINE),
+            SchedulePreferences(gaps = GapPreference.COMPACT),
+            SchedulePreferences(breaks = BreakPreference.AVOID_BACK_TO_BACK),
+            SchedulePreferences(breaks = BreakPreference.AT_LEAST),
+            SchedulePreferences(lunch = LunchBreak()),
+            SchedulePreferences(blockedTimes = listOf(BlockedTime(label = "Work", days = DaySet.MONDAY, start = 600, end = 700))),
+            SchedulePreferences(format = FormatPreference.ONLINE),
+            SchedulePreferences(campus = "Boston"),
+            SchedulePreferences(seats = SeatPolicy.WAITLIST_OK),
+            SchedulePreferences(preferredInstructors = listOf("Smith, Alex")),
+            SchedulePreferences(avoidedInstructors = listOf("Jones, Sam")),
+            SchedulePreferences(creditTarget = CreditTarget(16, 18)),
+        )
+        for (p in wishes) {
+            assertTrue(p.hasWishes)
+            assertTrue(p.summaryParts.isNotEmpty())
+            assertTrue(p.activeCount > 0)
+        }
+        assertFalse(SchedulePreferences().hasWishes)
+    }
+
+    @Test fun presetsToggleAndCombine() {
+        var p = SchedulePreset.MORNING_PERSON.toggled(SchedulePreferences())
+        assertTrue(SchedulePreset.MORNING_PERSON.isApplied(p))
+        assertEquals(TimePreference.PREFER, p.band(TimeBand.MORNING))
+        assertEquals(TimePreference.AVOID, p.band(TimeBand.NIGHT))
+        p = SchedulePreset.LONG_WEEKENDS.toggled(p)
+        assertTrue(SchedulePreset.LONG_WEEKENDS.isApplied(p))
+        assertTrue(SchedulePreset.MORNING_PERSON.isApplied(p))
+        assertTrue(p.daysOff.contains(5))
+        assertEquals(DayLayout.FEWER_DAYS, p.dayLayout)
+        p = SchedulePreset.NIGHT_OWL.toggled(p)
+        assertTrue(SchedulePreset.NIGHT_OWL.isApplied(p))
+        assertFalse(SchedulePreset.MORNING_PERSON.isApplied(p))
+        assertEquals(TimePreference.AVOID, p.band(TimeBand.MORNING))
+        assertEquals(TimePreference.PREFER, p.band(TimeBand.EVENING))
+        p = SchedulePreset.NIGHT_OWL.toggled(p)
+        p = SchedulePreset.LONG_WEEKENDS.toggled(p)
+        assertTrue(p.isDefault)
+    }
+
+    @Test fun compactDaysSetsLayoutAndGaps() {
+        var p = SchedulePreset.COMPACT_DAYS.toggled(SchedulePreferences())
+        assertEquals(DayLayout.FEWER_DAYS, p.dayLayout)
+        assertEquals(GapPreference.COMPACT, p.gaps)
+        p = SchedulePreset.COMPACT_DAYS.toggled(p)
+        assertTrue(p.isDefault)
+    }
+
+    @Test fun normalizingDropsWhatCantBeApplied() {
+        val p = SchedulePreferences(
+            earliestStart = TimeLimit(600),
+            latestEnd = TimeLimit(540),
+            maxClassesPerDay = 0,
+            maxMinutesPerDay = 10,
+            minimumBreakMinutes = 1_000,
+            lunch = LunchBreak(700, 705, 600),
+            blockedTimes = listOf(
+                BlockedTime(label = "  ", days = DaySet.MONDAY, start = 600, end = 700),
+                BlockedTime(label = "No days", days = DaySet(0), start = 600, end = 700),
+                BlockedTime(label = "Backwards", days = DaySet.MONDAY, start = 700, end = 600),
+                BlockedTime(label = "Club", days = DaySet.TUESDAY, start = 600, end = 700),
+                BlockedTime(label = "club", days = DaySet.TUESDAY, start = 600, end = 700),
+            ),
+            preferredInstructors = listOf("Smith, Alex", " smith, alex ", ""),
+            avoidedInstructors = listOf("Smith, Alex", "Jones, Sam"),
+            creditTarget = CreditTarget(40, 50),
+        )
+        val n = p.normalized()
+        assertEquals(TimeLimit(540), n.latestEnd)
+        assertNull(n.maxClassesPerDay)
+        assertNull(n.maxMinutesPerDay)
+        assertEquals(90, n.minimumBreakMinutes)
+        assertTrue(n.lunch!!.end - n.lunch.start >= n.lunch.minutes)
+        assertEquals(listOf("Blocked time", "Club"), n.blockedTimes.map { it.label })
+        assertEquals(listOf("Smith, Alex"), n.preferredInstructors)
+        assertEquals(listOf("Jones, Sam"), n.avoidedInstructors)
+        assertEquals(30, n.creditTarget?.upper)
+    }
+
+    @Test fun changedFieldsListWhatDiffers() {
+        val old = SchedulePreferences()
+        val block = BlockedTime(label = "Club", days = DaySet.TUESDAY, start = 1_080, end = 1_200)
+        val updated = old.withBand(TimeBand.MORNING, TimePreference.AVOID).copy(
+            earliestStart = TimeLimit(600),
+            daysOff = DaySet.FRIDAY,
+            blockedTimes = listOf(block),
+            lunch = LunchBreak(),
+        )
+        assertEquals(
+            setOf(PreferenceField.Band(TimeBand.MORNING), PreferenceField.EarliestStart, PreferenceField.DaysOff, PreferenceField.Blocked(block.id), PreferenceField.Lunch),
+            updated.changedFields(old),
+        )
+        assertTrue(updated.changedFields(updated).isEmpty())
+    }
+
+    @Test fun roundTrips() {
+        val original = fullyLoaded()
+        val decoded = AppJson.user.decodeFromString(SchedulePreferences.serializer(), AppJson.user.encodeToString(SchedulePreferences.serializer(), original))
+        assertEquals(original, decoded)
+    }
+
+    @Test fun anEmptyObjectDecodesToTheDefaults() {
+        val decoded = AppJson.user.decodeFromString(SchedulePreferences.serializer(), "{}")
+        assertTrue(decoded.isDefault)
+    }
+
+    @Test fun unknownAndDamagedValuesFallBackInsteadOfFailing() {
+        val json = """
+        {
+          "timeOfDay": {"morning": "prefer", "brunch": "prefer", "night": "sometimes"},
+          "dayLayout": "teleport",
+          "earliestStart": {"minutes": "soon"},
+          "daysOff": 32,
+          "maxClassesPerDay": 3,
+          "blockedTimes": [
+            {"label": "Club", "days": 20, "start": 1080, "end": 1200},
+            "garbage",
+            {"label": 7}
+          ],
+          "futureField": [1, 2, 3]
+        }
+        """
+        val decoded = AppJson.user.decodeFromString(SchedulePreferences.serializer(), json)
+        assertEquals(TimePreference.PREFER, decoded.band(TimeBand.MORNING))
+        assertEquals(TimePreference.OKAY, decoded.band(TimeBand.NIGHT))
+        assertEquals(DayLayout.NO_PREFERENCE, decoded.dayLayout)
+        assertNull(decoded.earliestStart)
+        assertEquals(DaySet.FRIDAY, decoded.daysOff)
+        assertEquals(3, decoded.maxClassesPerDay)
+        assertEquals(DaySet(20), decoded.blockedTimes.first { it.label == "Club" }.days)
+        assertEquals(listOf("Club"), decoded.activeBlockedTimes.map { it.label })
+    }
+
+    @Test fun plansSavedBeforePreferencesExistStillLoad() {
+        val plan = SchedulePlan(name = "Plan A", termCode = "202730", courses = listOf(PlanCourse(CourseKey("CS", "3000"), colorIndex = 0)))
+        val encoded = AppJson.user.encodeToJsonElement(SchedulePlan.serializer(), plan).jsonObject
+        assertNull(encoded["preferences"])
+        val decoded = AppJson.user.decodeFromJsonElement(SchedulePlan.serializer(), encoded)
+        assertEquals("Plan A", decoded.name)
+        assertNull(decoded.preferences)
+        assertEquals(1, decoded.courses.size)
+    }
+
+    @Test fun planPreferencesSurviveASaveAndLoad() {
+        val preferences = fullyLoaded()
+        val plan = SchedulePlan(name = "Plan B", termCode = "202730", preferences = preferences)
+        val decoded = UserJson.decode(UserJson.encode(UserData(plans = listOf(plan))))
+        assertEquals(1, decoded.plans.size)
+        assertEquals(preferences, decoded.plans.first().preferences)
+    }
+
+    @Test fun theStoreSavesPreferencesWithThePlan() {
+        val preferences = fullyLoaded()
+        val store = UserDataStore()
+        val plan = store.createPlan("Fall", "202710")
+        val other = store.createPlan("Other", "202710")
+        store.updatePlan(plan.id) { it.copy(preferences = preferences) }
+        val reloaded = UserDataStore(UserJson.decode(UserJson.encode(store.data)))
+        assertEquals(preferences, reloaded.plan(plan.id)?.preferences)
+        assertNull(reloaded.plan(other.id)?.preferences)
+        val copy = reloaded.duplicatePlan(plan.id)!!
+        assertEquals(preferences, reloaded.plan(copy.id)?.preferences)
+    }
+
+    @Test fun preferencesOfAnyShapeNeverTakeTheScheduleDown() {
+        val plan = SchedulePlan(name = "Plan D", termCode = "202730")
+        val encoded = AppJson.user.encodeToJsonElement(SchedulePlan.serializer(), plan).jsonObject
+        for (garbage in listOf(JsonPrimitive(7), JsonPrimitive("text"), JsonArray(listOf(JsonPrimitive(1), JsonPrimitive(2))), JsonPrimitive(true))) {
+            val decoded = AppJson.user.decodeFromJsonElement(SchedulePlan.serializer(), JsonObject(encoded + ("preferences" to garbage)))
+            assertEquals("Plan D", decoded.name)
+            assertTrue(decoded.preferences?.isDefault ?: true)
+        }
+        val other = JsonObject(encoded + ("preferences" to JsonPrimitive("text")) + ("name" to JsonPrimitive("Other")))
+        val file = buildJsonObject {
+            put("version", 1)
+            put("plans", kotlinx.serialization.json.buildJsonArray { add(encoded); add(other) })
+        }
+        val decoded = UserJson.decodeElement(file)
+        assertEquals(2, decoded.plans.size)
+    }
+
+    @Test fun damagedPreferencesNeverTakeTheScheduleDown() {
+        val plan = SchedulePlan(name = "Plan C", termCode = "202730")
+        val encoded = AppJson.user.encodeToJsonElement(SchedulePlan.serializer(), plan).jsonObject.toMutableMap()
+        encoded["preferences"] = buildJsonObject {
+            put("timeOfDay", 7)
+            put("blockedTimes", "nope")
+            put("campus", 3)
+        }
+        val decoded = AppJson.user.decodeFromJsonElement(SchedulePlan.serializer(), JsonObject(encoded))
+        assertEquals("Plan C", decoded.name)
+        assertEquals(true, decoded.preferences?.isDefault)
+    }
+}
+
+class ScheduleDraftTests {
+    @Test fun timesAreReadTheWayAModelWritesThem() {
+        val parse = SchedulePreferencesDraft.Companion::minutes
+        assertEquals(18 * 60, parse("18:00"))
+        assertEquals(18 * 60 + 30, parse("6:30 PM"))
+        assertEquals(18 * 60, parse("6pm"))
+        assertEquals(18 * 60, parse("6 p.m."))
+        assertEquals(10 * 60, parse("10"))
+        assertEquals(18 * 60, parse("1800"))
+        assertEquals(9 * 60 + 30, parse("930"))
+        assertEquals(0, parse("12am"))
+        assertEquals(12 * 60, parse("12pm"))
+        assertEquals(12 * 60, parse("noon"))
+        assertEquals(24 * 60, parse("midnight"))
+        assertEquals(24 * 60, parse("24:00"))
+        assertNull(parse("25:00"))
+        assertNull(parse("13pm"))
+        assertNull(parse("soon"))
+        assertNull(parse(""))
+        assertNull(parse("7:75"))
+    }
+
+    @Test fun theBriefsExampleBecomesTheExpectedSurvey() {
+        val draft = SchedulePreferencesDraft(
+            earliestStart = "10:00",
+            daysOff = listOf(DraftWeekday.FRIDAY),
+            wantsLunchBreak = true,
+            blockedTimes = listOf(DraftBlockedTime("Robotics club", listOf(DraftWeekday.TUESDAY, DraftWeekday.THURSDAY), "18:00", "20:00")),
+        )
+        val applied = draft.applied(SchedulePreferences())
+        assertEquals(TimeLimit(600, PreferenceStrength.REQUIRED), applied.earliestStart)
+        assertEquals(DaySet.FRIDAY, applied.daysOff)
+        assertEquals(PreferenceStrength.PREFERRED, applied.daysOffStrength)
+        assertTrue(applied.lunch != null)
+        assertEquals(1, applied.blockedTimes.size)
+        val block = applied.blockedTimes.first()
+        assertEquals("Robotics club", block.label)
+        assertEquals(DaySet.TUESDAY.union(DaySet.THURSDAY), block.days)
+        assertEquals(18 * 60, block.start)
+        assertEquals(20 * 60, block.end)
+        assertEquals(PreferenceStrength.REQUIRED, block.strength)
+        assertEquals("Nothing before 10 AM · Fridays off · 1 blocked time · Lunch break", applied.summary(4))
+    }
+
+    @Test fun bandsAndLayoutsMap() {
+        val draft = SchedulePreferencesDraft(
+            preferredTimes = listOf(DraftTime.MORNING, DraftTime.EARLY_MORNING),
+            avoidedTimes = listOf(DraftTime.NIGHT, DraftTime.MORNING),
+            layout = DraftLayout.SPREAD_OUT,
+            maxClassesPerDay = 3,
+            maxHoursPerDay = 5,
+            breaks = DraftBreaks.TIME_TO_WALK,
+            format = DraftFormat.HYBRID,
+            seats = DraftSeats.WAITLIST_OK,
+        )
+        val p = draft.applied(SchedulePreferences())
+        assertEquals(TimePreference.PREFER, p.band(TimeBand.EARLY_MORNING))
+        assertEquals(TimePreference.AVOID, p.band(TimeBand.MORNING))
+        assertEquals(TimePreference.AVOID, p.band(TimeBand.NIGHT))
+        assertEquals(DayLayout.SPREAD_OUT, p.dayLayout)
+        assertEquals(3, p.maxClassesPerDay)
+        assertEquals(300, p.maxMinutesPerDay)
+        assertEquals(BreakPreference.AT_LEAST, p.breaks)
+        assertEquals(15, p.minimumBreakMinutes)
+        assertEquals(PreferenceStrength.PREFERRED, p.minimumBreakStrength)
+        assertEquals(FormatPreference.HYBRID, p.format)
+        assertEquals(SeatPolicy.WAITLIST_OK, p.seats)
+    }
+
+    @Test fun flexibleLimitsAndRequiredDaysOff() {
+        val draft = SchedulePreferencesDraft(
+            earliestStart = "9:30",
+            latestEnd = "5pm",
+            timeLimitsAreFlexible = true,
+            daysOff = listOf(DraftWeekday.MONDAY, DraftWeekday.FRIDAY),
+            daysOffAreRequired = true,
+        )
+        val p = draft.applied(SchedulePreferences())
+        assertEquals(TimeLimit(9 * 60 + 30, PreferenceStrength.PREFERRED), p.earliestStart)
+        assertEquals(TimeLimit(17 * 60, PreferenceStrength.PREFERRED), p.latestEnd)
+        assertEquals(DaySet.MONDAY.union(DaySet.FRIDAY), p.daysOff)
+        assertEquals(PreferenceStrength.REQUIRED, p.daysOffStrength)
+    }
+
+    @Test fun anEndBeforeTheStartIsRepairedAsTheAfternoonOrEvening() {
+        val draft = SchedulePreferencesDraft(blockedTimes = listOf(
+            DraftBlockedTime("Lunch", listOf(DraftWeekday.MONDAY), "11:00", "01:00"),
+            DraftBlockedTime("Choir", listOf(DraftWeekday.WEDNESDAY), "18:00", "08:00"),
+            DraftBlockedTime("Run", listOf(DraftWeekday.FRIDAY), "06:00", "08:00"),
+        ))
+        val blocks = draft.applied(SchedulePreferences()).blockedTimes
+        assertEquals(listOf("Lunch", "Choir", "Run"), blocks.map { it.label })
+        assertEquals(11 * 60, blocks[0].start)
+        assertEquals(13 * 60, blocks[0].end)
+        assertEquals(18 * 60, blocks[1].start)
+        assertEquals(20 * 60, blocks[1].end)
+        assertEquals(6 * 60, blocks[2].start)
+        assertEquals(8 * 60, blocks[2].end)
+    }
+
+    @Test fun aFinishBeforeTheStartIsNotBelieved() {
+        val draft = SchedulePreferencesDraft(earliestStart = "10:00", latestEnd = "09:00")
+        val p = draft.applied(SchedulePreferences())
+        assertEquals(10 * 60, p.earliestStart?.minutes)
+        assertNull(p.latestEnd)
+        val current = SchedulePreferences(latestEnd = TimeLimit(15 * 60))
+        assertEquals(15 * 60, SchedulePreferencesDraft(earliestStart = "16:00").applied(current).latestEnd?.minutes)
+    }
+
+    @Test fun unusableAnswersAreDroppedNotGuessedAt() {
+        val draft = SchedulePreferencesDraft(
+            earliestStart = "whenever",
+            latestEnd = "26:00",
+            maxClassesPerDay = 40,
+            maxHoursPerDay = 0,
+            blockedTimes = listOf(
+                DraftBlockedTime("No days", emptyList(), "10:00", "11:00"),
+                DraftBlockedTime("No time", listOf(DraftWeekday.MONDAY), "later", "11:00"),
+                DraftBlockedTime("Backwards", listOf(DraftWeekday.MONDAY), "17:00", "16:00"),
+            ),
+        )
+        assertTrue(draft.applied(SchedulePreferences()).isDefault)
+    }
+
+    @Test fun aDescriptionAddsToTheSurveyInsteadOfReplacingIt() {
+        val current = SchedulePreferences(
+            timeOfDay = mapOf(TimeBand.AFTERNOON to TimePreference.PREFER),
+            daysOff = DaySet.MONDAY,
+            blockedTimes = listOf(BlockedTime(label = "Work", days = DaySet.WEDNESDAY, start = 13 * 60, end = 17 * 60)),
+        )
+        val draft = SchedulePreferencesDraft(
+            daysOff = listOf(DraftWeekday.FRIDAY),
+            blockedTimes = listOf(
+                DraftBlockedTime("work", listOf(DraftWeekday.WEDNESDAY), "13:00", "17:00"),
+                DraftBlockedTime("Choir", listOf(DraftWeekday.THURSDAY), "18:00", "19:30"),
+            ),
+        )
+        val merged = draft.applied(current)
+        assertEquals(TimePreference.PREFER, merged.band(TimeBand.AFTERNOON))
+        assertEquals(DaySet.FRIDAY, merged.daysOff)
+        assertEquals(listOf("Work", "Choir"), merged.blockedTimes.map { it.label })
+        val changed = merged.changedFields(current)
+        assertTrue(PreferenceField.DaysOff in changed)
+        assertFalse(changed.any { it is PreferenceField.Band && it.band == TimeBand.AFTERNOON })
+        assertEquals(2, changed.size)
+    }
+
+    @Test fun anEmptyDraftIsEmpty() {
+        assertTrue(SchedulePreferencesDraft().isEmpty)
+        assertTrue(SchedulePreferencesDraft(wantsLunchBreak = false).isEmpty)
+        assertFalse(SchedulePreferencesDraft(wantsLunchBreak = true).isEmpty)
+        assertTrue(SchedulePreferencesDraft().applied(SchedulePreferences()).isDefault)
+        assertEquals(2, SchedulePreferencesDraft(preferredTimes = listOf(DraftTime.MORNING), daysOff = listOf(DraftWeekday.FRIDAY)).filledCount)
+    }
+
+    private val briefsExample = "No classes before 10, I have robotics club Tuesdays and Thursdays 6–8pm, I’d like Fridays off and a lunch break"
+
+    private fun overeagerDraft() = SchedulePreferencesDraft(
+        earliestStart = "10:00",
+        timeLimitsAreFlexible = true,
+        daysOff = listOf(DraftWeekday.FRIDAY),
+        daysOffAreRequired = true,
+        layout = DraftLayout.FEWER_DAYS,
+        maxClassesPerDay = 3,
+        maxHoursPerDay = 5,
+        breaks = DraftBreaks.AVOID_BACK_TO_BACK,
+        wantsLunchBreak = true,
+        blockedTimes = listOf(DraftBlockedTime("Robotics club", listOf(DraftWeekday.TUESDAY, DraftWeekday.THURSDAY), "18:00", "20:00")),
+        format = DraftFormat.ONLINE,
+        seats = DraftSeats.OPEN_SEATS_ONLY,
+    )
+
+    @Test fun answersTheStudentNeverMentionedAreDropped() {
+        val grounded = overeagerDraft().grounded(briefsExample)
+        assertNull(grounded.format)
+        assertNull(grounded.seats)
+        assertNull(grounded.breaks)
+        assertNull(grounded.layout)
+        assertNull(grounded.maxClassesPerDay)
+        assertNull(grounded.maxHoursPerDay)
+        assertEquals("10:00", grounded.earliestStart)
+        assertEquals(true, grounded.wantsLunchBreak)
+        assertEquals(listOf(DraftWeekday.FRIDAY), grounded.daysOff)
+        assertEquals(1, grounded.blockedTimes.size)
+    }
+
+    @Test fun firmnessFollowsTheWordsNotTheModel() {
+        val applied = overeagerDraft().grounded(briefsExample).applied(SchedulePreferences())
+        assertEquals(TimeLimit(600, PreferenceStrength.REQUIRED), applied.earliestStart)
+        assertEquals(PreferenceStrength.PREFERRED, applied.daysOffStrength)
+        assertEquals("Nothing before 10 AM · Fridays off · 1 blocked time · Lunch break", applied.summary(4))
+    }
+
+    @Test fun commitmentsAndSoftenersAreRecognized() {
+        val work = SchedulePreferencesDraft(daysOff = listOf(DraftWeekday.FRIDAY), daysOffAreRequired = false).grounded("I work Fridays so I need them off")
+        assertEquals(true, work.daysOffAreRequired)
+        val never = SchedulePreferencesDraft(daysOff = listOf(DraftWeekday.MONDAY)).grounded("No classes on Mondays please")
+        assertEquals(true, never.daysOffAreRequired)
+        val wish = SchedulePreferencesDraft(daysOff = listOf(DraftWeekday.MONDAY), daysOffAreRequired = true).grounded("Mondays off would be great")
+        assertEquals(false, wish.daysOffAreRequired)
+        val soft = SchedulePreferencesDraft(earliestStart = "10:00", timeLimitsAreFlexible = false).grounded("Ideally nothing before 10 in the morning")
+        assertEquals(true, soft.timeLimitsAreFlexible)
+        val firm = SchedulePreferencesDraft(earliestStart = "10:00", timeLimitsAreFlexible = true).grounded("I can’t do classes before 10")
+        assertEquals(false, firm.timeLimitsAreFlexible)
+    }
+
+    @Test fun limitsNeedANumberAndADay() {
+        val draft = SchedulePreferencesDraft(maxClassesPerDay = 3, maxHoursPerDay = 5)
+        assertEquals(3, draft.grounded("I don’t want more than three classes a day").maxClassesPerDay)
+        assertNull(draft.grounded("I don’t want too many classes").maxClassesPerDay)
+        assertEquals(5, draft.grounded("No more than 5 hours of class each day").maxHoursPerDay)
+    }
+
+    @Test fun otherLanguagesAreLeftToTheModel() {
+        val draft = SchedulePreferencesDraft(timeLimitsAreFlexible = true, daysOff = listOf(DraftWeekday.FRIDAY), daysOffAreRequired = true, format = DraftFormat.ONLINE)
+        val text = "Quiero las mañanas libres y los viernes sin clase, porque trabajo por las tardes"
+        assertFalse(ScheduleAssistant.isEnglish(text))
+        assertEquals(draft, draft.grounded(text))
+        assertTrue(ScheduleAssistant.isEnglish(briefsExample))
+    }
+
+    @Test fun tooManyBlocksAreCapped() {
+        val blocks = (0 until 20).map { DraftBlockedTime("Block $it", listOf(DraftWeekday.MONDAY), "${8 + it % 10}:00", "${9 + it % 10}:00") }
+        val p = SchedulePreferencesDraft(blockedTimes = blocks).applied(SchedulePreferences())
+        assertTrue(p.blockedTimes.size <= SchedulePreferencesDraft.MAX_BLOCKED_TIMES)
+    }
+
+    @Test fun failuresHaveHumanMessages() {
+        val failures = listOf(
+            ScheduleAssistant.Failure.EmptyDescription,
+            ScheduleAssistant.Failure.DescriptionTooLong,
+            ScheduleAssistant.Failure.Guardrail,
+            ScheduleAssistant.Failure.ContextTooLarge,
+            ScheduleAssistant.Failure.UnsupportedLanguage,
+            ScheduleAssistant.Failure.Busy,
+            ScheduleAssistant.Failure.TimedOut,
+            ScheduleAssistant.Failure.NothingFound,
+            ScheduleAssistant.Failure.Failed("x"),
+            ScheduleAssistant.Failure.Unavailable(ScheduleAssistant.Availability.NOT_ENABLED),
+        )
+        assertTrue(failures.all { it.message.isNotEmpty() })
+        assertTrue(ScheduleAssistant.Availability.DEVICE_NOT_ELIGIBLE.note!!.contains("survey"))
+        assertTrue(ScheduleAssistant.Availability.NOT_ENABLED.note!!.contains("Settings"))
+        assertTrue(ScheduleAssistant.Availability.NOT_READY.note!!.contains("later"))
+        assertNull(ScheduleAssistant.Availability.AVAILABLE.note)
+    }
+}
+
+class ScheduleBlockerTests {
+    @Test fun findsTheCourseThatAlwaysClashes() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(1), 9.5, 10.5))),
+            course("C", "1", listOf(section("C1", "C", "1", listOf(2), 9.0, 10.0))),
+        )
+        val result = generate(courses)
+        assertEquals(0, result.totalFound)
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, ScheduleFilters(), diagnostics = result.diagnostics)
+        assertEquals(3, analysis.requiredCount)
+        assertEquals(setOf(listOf("A 1"), listOf("B 1")), analysis.options.map { it.courses.map { course -> course.description } }.toSet())
+        assertEquals(setOf("A 1", "B 1"), analysis.allBlockingCourses.map { it.description }.toSet())
+        assertEquals(listOf(CourseKey("B", "1")), analysis.clashes(CourseKey("A", "1")))
+        assertTrue(analysis.options.all { it.scheduleCount == 1 })
+    }
+
+    @Test fun aCourseWithNoSectionsAlwaysHasToGo() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", emptyList()),
+            course("C", "1", listOf(section("C1", "C", "1", listOf(2), 9.0, 10.0))),
+        )
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, ScheduleFilters())
+        assertEquals(listOf("B 1"), analysis.notOffered.map { it.description })
+        assertEquals(listOf(listOf("B 1")), analysis.options.map { it.courses.map { course -> course.description } })
+    }
+
+    @Test fun coursesTheRulesRuleOutAreReportedSeparately() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(5), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(2), 9.0, 10.0))),
+        )
+        val preferences = SchedulePreferences(daysOff = DaySet.FRIDAY, daysOffStrength = PreferenceStrength.REQUIRED)
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, ScheduleFilters(), preferences)
+        assertEquals(listOf("A 1"), analysis.filteredOut.map { it.description })
+        assertTrue(analysis.notOffered.isEmpty())
+        assertEquals(listOf(listOf("A 1")), analysis.options.map { it.courses.map { course -> course.description } })
+    }
+
+    @Test fun looksAtPairsWhenNoSingleCourseIsToBlame() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(1), 9.0, 10.0))),
+            course("C", "1", listOf(section("C1", "C", "1", listOf(2), 9.0, 10.0))),
+            course("D", "1", listOf(section("D1", "D", "1", listOf(2), 9.0, 10.0))),
+        )
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, ScheduleFilters())
+        assertEquals(4, analysis.options.size)
+        assertTrue(analysis.options.all { it.courses.size == 2 })
+        val sets = analysis.options.map { it.courses.map { course -> course.description }.toSet() }.toSet()
+        assertEquals(
+            setOf(setOf("A 1", "C 1"), setOf("A 1", "D 1"), setOf("B 1", "C 1"), setOf("B 1", "D 1")),
+            sets,
+        )
+    }
+
+    @Test fun countProblemsAreNotCourseProblems() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(2), 9.0, 10.0))),
+        )
+        val filters = ScheduleFilters(courseCount = 1)
+        val result = ScheduleGenerator.generate(courses, filters)
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, filters, diagnostics = result.diagnostics)
+        assertTrue(analysis.options.isEmpty())
+    }
+
+    @Test fun makingTheBlockersOptionalProducesSchedules() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(1), 9.5, 10.5))),
+        )
+        val analysis = ScheduleGenerator.analyzeBlockers(courses, ScheduleFilters())
+        val drop = analysis.blockingCourses.toSet()
+        val relaxed = courses.map { input -> if (input.key in drop) input.copy(isRequired = false) else input }
+        assertTrue(ScheduleGenerator.generate(relaxed, ScheduleFilters()).totalFound > 0)
+    }
+
+    @Test fun noResultsAnalysisCombinesBlockersAndRelaxations() {
+        val courses = listOf(
+            course("A", "1", listOf(section("A1", "A", "1", listOf(1), 9.0, 10.0))),
+            course("B", "1", listOf(section("B1", "B", "1", listOf(1), 9.5, 10.5))),
+        )
+        val result = ScheduleGenerator.generate(courses, ScheduleFilters())
+        val analysis = ScheduleGenerator.analyzeEmptyResult(courses, ScheduleFilters(), SchedulePreferences(), result.diagnostics)
+        assertTrue(analysis.blockers.options.isNotEmpty())
+        assertTrue(analysis.suggestions.isEmpty())
+    }
+}
+
+class SchedulePreferencesContextTests {
+    @Test fun campusesInstructorsAndCreditsComeFromThePlansCourses() {
+        val index = LogicTests.bundledIndex()
+        val plan = SchedulePlan(
+            name = "Plan",
+            termCode = "202710",
+            courses = listOf(
+                PlanCourse(key = CourseKey("CS", "3000"), colorIndex = 0),
+                PlanCourse(key = CourseKey("MATH", "2331"), isRequired = false, colorIndex = 1),
+            ),
+        )
+        val context = SchedulePreferencesContext.of(plan, index)
+        assertTrue(context.campusNames.contains("Boston"))
+        assertTrue(context.campusNames.all { !it.contains("online", true) && !it.contains("no campus", true) })
+        assertEquals(1, context.optionalCourseCount)
+        assertTrue(context.requiredCredits > 0)
+        assertTrue(context.totalCredits > context.requiredCredits)
+        assertTrue(context.instructors.isNotEmpty())
+        assertTrue(context.instructors.all { it.courses.isNotEmpty() })
+        assertEquals(context.instructors.map { it.name }.sortedBy { it.lowercase() }, context.instructors.map { it.name })
+        assertTrue(SchedulePreferencesContext.of(plan, null).instructors.isEmpty())
+    }
+
+    @Test fun excludedSectionsDontOfferTheirInstructors() {
+        val index = LogicTests.bundledIndex()
+        val key = CourseKey("CS", "3000")
+        val plan = SchedulePlan(name = "Plan", termCode = "202710", courses = listOf(PlanCourse(key = key, colorIndex = 0)))
+        val everyone = SchedulePreferencesContext.of(plan, index).instructors
+        val excluded = plan.copy(courses = listOf(plan.courses[0].copy(excludedCRNs = index.sections(key).map { it.crn }.toSet())))
+        assertTrue(SchedulePreferencesContext.of(excluded, index).instructors.isEmpty())
+        assertTrue(everyone.isNotEmpty())
+    }
+}
+
+class ScheduleReorderBridgeTests {
+    private fun planned(code: String) = DegreePlanCourse.of(CourseKey.parse(code), code, 4.0)
+    private val terms = listOf("202710", "202630", "202610", "202530", "202510")
+    private val spring = setOf("202630", "202530")
+    private val fall = setOf("202710", "202610", "202510")
+
+    private fun degreePlan() = DegreePlan(
+        name = "Plan",
+        terms = listOf(
+            DegreePlanTerm(season = PlanSeason.FALL, year = 2026, courses = listOf(planned("CS 3386"), planned("CS 3800"))),
+            DegreePlanTerm(season = PlanSeason.SPRING, year = 2027, courses = listOf(planned("CS 4100"))),
+        ),
+    )
+
+    private fun history() = OfferingHistory(
+        checkedTerms = terms,
+        offered = mapOf(
+            CourseKey.parse("CS 3386")!! to spring,
+            CourseKey.parse("CS 3800")!! to fall,
+            CourseKey.parse("CS 4100")!! to (fall + spring),
+        ),
+    )
+
+    @Test fun aSuggestionBecomesAnOptionThatMovesTheCourseOutOfTheSchedule() {
+        val plan = degreePlan()
+        val origin = plan.terms[0]
+        val found = app.termorganize.logic.degree.DegreePlanReordering.suggestions(
+            plan, origin.id, listOf(CourseKey.parse("CS 3386")!!), history(), { PrerequisiteLookup.None }, app.termorganize.core.model.CourseEquivalences.none,
+        )
+        val single = found.first { it.moves.size == 1 }
+        val option = ScheduleReorderSuggestions.option(single, origin)
+        assertEquals("Move CS 3386 to Spring 2027", option.title)
+        assertEquals("Moved CS 3386 to Spring 2027", option.appliedText)
+        assertEquals(listOf(CourseKey.parse("CS 3386")), option.movedAway)
+        assertTrue(option.movedIn.isEmpty())
+        assertEquals("CS 3386 comes out of this schedule.", option.scheduleEffect)
+        assertEquals("Offered every spring", option.reasons.first())
+        assertFalse(option.addsSemester)
+        val changed = option.apply(plan)
+        assertEquals(listOf("CS 3800"), changed.terms[0].courses.map { it.key?.description })
+        assertEquals(listOf("CS 4100", "CS 3386"), changed.terms[1].courses.map { it.key?.description })
+        assertEquals(2, plan.terms[0].courses.size)
+    }
+
+    @Test fun aSwapAlsoBringsACourseIn() {
+        val plan = degreePlan()
+        val origin = plan.terms[0]
+        val found = app.termorganize.logic.degree.DegreePlanReordering.suggestions(
+            plan, origin.id, listOf(CourseKey.parse("CS 3386")!!), history(), { PrerequisiteLookup.None }, app.termorganize.core.model.CourseEquivalences.none,
+        )
+        val swap = found.first { it.moves.size == 2 }
+        val option = ScheduleReorderSuggestions.option(swap, origin)
+        assertEquals(listOf(CourseKey.parse("CS 3386")), option.movedAway)
+        assertEquals(listOf(CourseKey.parse("CS 4100")), option.movedIn)
+        assertEquals("CS 3386 comes out of this schedule. CS 4100 will be added to it if it\u2019s offered this term.", option.scheduleEffect)
+    }
+
+    @Test fun aNewSemesterIsFlagged() {
+        val plan = degreePlan().copy(terms = listOf(DegreePlanTerm(season = PlanSeason.FALL, year = 2026, courses = listOf(planned("CS 3386")))))
+        val origin = plan.terms[0]
+        val found = app.termorganize.logic.degree.DegreePlanReordering.suggestions(
+            plan, origin.id, listOf(CourseKey.parse("CS 3386")!!), history(), { PrerequisiteLookup.None }, app.termorganize.core.model.CourseEquivalences.none,
+        )
+        val option = ScheduleReorderSuggestions.option(found.first(), origin)
+        assertTrue(option.addsSemester)
+        val changed = option.apply(plan)
+        assertEquals(2, changed.terms.size)
+        assertEquals(listOf("CS 3386"), changed.terms.last().courses.map { it.key?.description })
+    }
+
+    @Test fun nothingIsLookedUpWhenNoBlockingCourseIsInTheSemester() = runBlocking {
+        val plan = degreePlan()
+        val fall2026 = Term("202710", "Fall 2026 Semester")
+        val result = ScheduleReorderSuggestions.load(
+            listOf(CourseKey.parse("CS 9001")!!), plan, fall2026, emptyList(),
+            historyOf = { _ -> error("looked up") },
+        )
+        assertTrue(result.options.isEmpty())
+        val summer = Term("202750", "Summer Full 2027 Semester")
+        val other = ScheduleReorderSuggestions.load(
+            listOf(CourseKey.parse("CS 3386")!!), plan, summer, emptyList(),
+            historyOf = { _ -> error("looked up") },
+        )
+        assertTrue(other.options.isEmpty())
+    }
+
+    @Test fun titlesThatAreNotMovesStillReadSensibly() {
+        val option = ScheduleReorderOption("x", "Something else", emptyList(), false, emptyList(), emptyList()) { it }
+        assertEquals("Updated your degree plan", option.appliedText)
+        assertEquals("", option.scheduleEffect)
+    }
+}
+
+private fun fullyLoaded() = SchedulePreferences(
+    timeOfDay = mapOf(TimeBand.EARLY_MORNING to TimePreference.AVOID, TimeBand.AFTERNOON to TimePreference.PREFER),
+    earliestStart = TimeLimit(600, PreferenceStrength.PREFERRED),
+    latestEnd = TimeLimit(1_020),
+    daysOff = DaySet.FRIDAY.union(DaySet.MONDAY),
+    daysOffStrength = PreferenceStrength.REQUIRED,
+    dayLayout = DayLayout.SPREAD_OUT,
+    maxClassesPerDay = 3,
+    maxMinutesPerDay = 300,
+    gaps = GapPreference.COMPACT,
+    breaks = BreakPreference.AT_LEAST,
+    minimumBreakMinutes = 20,
+    minimumBreakStrength = PreferenceStrength.REQUIRED,
+    lunch = LunchBreak(690, 840, 45),
+    blockedTimes = listOf(
+        BlockedTime(label = "Robotics club", days = DaySet.TUESDAY.union(DaySet.THURSDAY), start = 18 * 60, end = 20 * 60),
+        BlockedTime(label = "Work", days = DaySet.MONDAY, start = 13 * 60, end = 17 * 60, strength = PreferenceStrength.PREFERRED, isEnabled = false),
+    ),
+    format = FormatPreference.HYBRID,
+    formatStrength = PreferenceStrength.REQUIRED,
+    campus = "Boston",
+    campusStrength = PreferenceStrength.REQUIRED,
+    seats = SeatPolicy.WAITLIST_OK,
+    preferredInstructors = listOf("Smith, Alex"),
+    avoidedInstructors = listOf("Jones, Sam"),
+    creditTarget = CreditTarget(16, 18),
+)

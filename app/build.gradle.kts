@@ -114,6 +114,9 @@ dependencies {
     implementation("io.ktor:ktor-client-okhttp:3.2.3")
     implementation("io.ktor:ktor-client-content-negotiation:3.2.3")
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.2.3")
+    implementation("androidx.appsearch:appsearch:1.1.0")
+    implementation("androidx.appsearch:appsearch-local-storage:1.1.0")
+    implementation("androidx.appsearch:appsearch-platform-storage:1.1.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
@@ -125,6 +128,9 @@ dependencies {
     testImplementation("androidx.compose.ui:ui-test-junit4")
 
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
+    androidTestImplementation("androidx.test:core:1.7.0")
+    androidTestImplementation("androidx.test:rules:1.7.0")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }

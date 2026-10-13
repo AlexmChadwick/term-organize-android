@@ -204,6 +204,7 @@ data class DaySet(val rawValue: Int) {
     fun isSubsetOf(other: DaySet): Boolean = rawValue and other.rawValue == rawValue
     fun isDisjoint(other: DaySet): Boolean = rawValue and other.rawValue == 0
     fun union(other: DaySet): DaySet = DaySet((rawValue or other.rawValue) and 0x7F)
+    fun intersection(other: DaySet): DaySet = DaySet((rawValue and other.rawValue) and 0x7F)
     fun minus(dayBit: DaySet): DaySet = DaySet(rawValue and dayBit.rawValue.inv() and 0x7F)
 
     val compactLabel: String get() = indices.joinToString("") { LETTERS[it] }
@@ -424,11 +425,16 @@ data class CourseInfo(
     val maxCredits: Double? = null,
     val prerequisites: Requisite? = null,
     val corequisites: Requisite? = null,
-    val equivalents: List<CourseKey> = emptyList(),
+    var equivalents: List<CourseKey> = emptyList(),
     val sourceTerm: String,
     val isRetired: Boolean? = null,
     val fetchedAt: Double = 0.0,
 ) {
+    init {
+        val normalized = equivalents.filter { it != key }.toSet().sorted()
+        if (normalized != equivalents) equivalents = normalized
+    }
+
     val creditsLabel: String?
         get() {
             val low = minCredits ?: maxCredits ?: return null

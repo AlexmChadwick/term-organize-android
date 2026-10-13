@@ -1,8 +1,8 @@
 # Term Organize Android parity
 
-This maps the SwiftUI app (git archive of `AlexmChadwick/Northeastern-Term-Organize` HEAD, extracted as the spec) onto the Kotlin app in `app/`. Status is **ported**, **partial**, or **not ported**.
+This maps the SwiftUI app (git archive of `AlexmChadwick/Northeastern-Term-Organize` HEAD, the spec in `uploads/`) onto the Kotlin app in `app/`. Status is **ported**, **partial**, or **not ported**.
 
-The Apple targets (iPhone, iPad, Mac) share one logic layer and two SwiftUI shells. Android has one adaptive Compose UI. Mac windowing, menus, and keyboard shortcuts are covered by the tablet rail and the same screens, not by a second desktop shell.
+The Apple targets share one logic layer and two SwiftUI shells. Android has one adaptive Compose UI. Mac windowing, menus, and keyboard shortcuts are the tablet rail and the same screens.
 
 ## Feature checklist
 
@@ -11,26 +11,30 @@ The Apple targets (iPhone, iPad, Mac) share one logic layer and two SwiftUI shel
 | Search: codes, titles, shorthand, typos, CRN, professor, subject | `logic/search/SearchEngine.kt`, Search screen | Ported. Tests use the bundled Fall 2026 catalog. |
 | Filters: subject, NUpath, level, credits, campus, type, honors, open seats, instruction, days, time | `SearchFilters`, filter sheet | Ported |
 | Course page: prereq/coreq tree, prerequisite for, sections, seats, waitlist | Course screen, `Requisite` | Ported |
-| Live section refresh | `BannerClient.refreshCourse` | Ported when Banner answers. Otherwise the bundled snapshot stays. |
-| Schedule plans, primary plan, week calendar, conflicts | Schedule screen, `Meeting.overlaps` | Ported |
-| Constraint generator, survey presets, ranking, reasons, no-result suggestions | `ScheduleGenerator`, `SchedulePreset`, `SchedulePreferenceRules` | Ported. The search is a DFS with the same conflict rule (slot overlap and date windows). It does not include the Swift sampler or the full `ScheduleScoring.Weights` table. Generator tests from `ScheduleGeneratorTests.swift` pass, including CS 3000 + CS 3001 + MATH 2331. |
-| Natural-language preferences | `logic/nl/PreferencesParser.kt` | Ported as a deterministic parser (`SchedulePreferencesDraft.applied` / `grounded`). It does not call Apple Intelligence, and it does not send the sentence off the device. It is always available. |
-| Export `.ics`, system calendar, share image, copy CRNs | `ScheduleExporter`, `AppModel` | Ported. Calendar insert uses `ACTION_INSERT` for the first selected meeting. `.ics` carries the term’s meetings. |
+| Live section refresh | `BannerClient.refreshCourse`, `CatalogBuilder.applyCourseRefresh` | Ported when Banner answers. Otherwise the stored snapshot stays. |
+| Every Banner term, on demand, with a disk cache | `CatalogStore`, `TermMenu`, `AppModel.openTerm`, Home term chips | Ported. Fall 2026 is bundled. The home chips match the Swift term menu: the 10 newest Northeastern terms, 6 CPS, and 6 Law from the Banner list (40 terms), plus any term already saved on disk. Choosing one downloads sections, subjects, campuses, and attributes, merges known course details, and saves `files/catalogs/term-<code>.json`. The fresher of the download and the bundle wins. |
+| Schedule plans, primary plan, week calendar, conflicts, notices | Schedule screen, `ResolvedPlan`, `ScheduleNotices` | Ported. The schedule lists time conflicts, full sections, missing courses, a heavy credit load, unlisted CRNs, and sections left over from a removed course, and can forget those CRNs. A plan can be duplicated (`Name Copy`). Plans saved under another term are listed and open that term. |
+| Constraint generator, sampler, weight table, ranking reasons, no-result suggestions | `ScheduleEngine`, `ScheduleScoring.Weights`, `SchedulePreferenceRules` | Ported. Exhaustive DFS, then the stratified sampler when the leaf, node, or time budget is hit. The weight table matches `ScheduleScoring.swift` (base 100, days, gaps, comfort, full sections, seats, days off, back-to-back, travel, lunch, bands, soft limits, format, campus, instructor). Reasons are up to 4 benefits and 2 caveats. |
+| Natural-language preferences | `logic/nl/PreferencesParser.kt` | Ported as a deterministic parser. It does not call Apple Intelligence and it does not send the sentence off the device. It is always available. |
+| Export `.ics` | `ScheduleExporter.events`, `calendarText` | Ported. One VEVENT per weekly meeting, plus each final. Recurrence is `RRULE` with `BYDAY` and `UNTIL`. |
+| Android Calendar | `ScheduleExporter.insertAll` | Ported. With `WRITE_CALENDAR`, every weekly meeting and every final is inserted. Recurring rows use `DURATION` and `RRULE`, not `DTEND`. |
+| Share image, copy CRNs | `AppModel` | Ported |
 | Degree-plan PDF import (picker and Open with) | SAF `OpenDocument`, VIEW `application/pdf` | Ported |
-| Edit plan, prerequisite checks, repeat checks, totals | Degree screen, `DegreePlanAnalysis` | Ported |
-| PDF export in the audit layout | `DegreePlanPdf.kt` | Ported. A4, Helvetica, the same headers, dash rules, and course lines. Round-trip test covers the sample export. |
+| Edit plan, prerequisite checks, repeat checks, totals | Degree screen, `DegreePlanAnalysis` | Ported. Duplicate makes a copy named “name copy”, with new ids for the plan, semesters, and courses. |
+| PDF export in the audit layout | `DegreePlanPdf.kt` | Ported. A4, Helvetica, the same headers, dash rules, and course lines. |
 | Autofill from a degree plan or another schedule | `DegreePlanAutofill` | Ported |
-| Degree audit from the academic catalog | `ProgramCatalogParser`, `DegreeAudit` | Partial. HTML tables, required courses, choose-lists, ranges, general electives, NUpath (at most two areas), major hours, co-op, total hours, waivers, count-course substitutions, and equivalences are implemented. The Swift optimal rebalance (`ensureBestMatching`) and petition course-number questions are not. Greedy placement plus a fewest-credits choice is what runs. |
-| Equivalences, renumbered courses, older terms | `CourseEquivalences`, `CourseTitleMatcher`, `checkOlderTerms` | Ported. Older terms query Banner for up to four earlier NEU terms. Title similarity suggests a current course when a completed title is missing from this catalog. |
+| Degree audit, optimal rebalance, petition course numbers | `AuditEngine`, `DegreePetitionQuestions` | Ported. Substitutions, demand and contest, required and choice fill, rebalance (budget 2000, steps 0..3), `ensureBestMatching`, hour trim, note checks, and the petition course-number questions. The degree screen asks the question and stores the answer. |
+| Offering history and semester-move suggestions | `OfferingHistory`, `OfferingHistoryRepository`, `DegreePlanReordering` | Ported. The degree screen loads two years of NEU terms (summers included), says when a course is usually taught, and offers moves, swaps, and a new semester when a course is not offered then. |
+| Equivalences, renumbered courses, older terms | `CourseEquivalences`, `EquivalenceSuggester`, `CourseInfoStore`, `CourseTitleMatcher`, `checkOlderTerms` | Ported. Older terms query Banner. The degree screen’s Suggest equivalences button uses the same listed-together and similar-title rules as `EquivalenceSuggester` against the open catalog. Opening a degree plan calls `CourseInfoStore.load` and `loadAttributes`: prerequisites, Banner equivalents, and NUpath attributes for courses the open term does not list come from the disk cache, then from Banner. |
 | Seat alerts | `SeatCheckWorker`, `WatchlistComparison` | Ported. Unique periodic work `seat-alerts`, 15 minutes, notification channel `seat-alerts`. |
 | Free rooms | `RoomAvailability`, Rooms screen | Ported |
 | Professors and teaching calendar | `ProfessorPage`, professor route | Ported, including a Rate My Professors search link |
 | Widgets: Up next, daily agenda | Glance `UpNextWidget`, `AgendaWidget` | Ported |
 | Deep links `termorganize://` and `neuclasssearch://` | `MainActivity.route` | Ported for search, schedule, next, course, and section |
 | Siri / App Intents | `res/xml/shortcuts.xml` | Ported as static shortcuts: Search courses, My schedule, Next class |
-| System app search index | — | Not ported. In-app search and shortcuts are the Android equivalents that ship. AndroidX AppSearch is not indexed. |
+| AppSearch course index | `logic/search/CourseAppSearch.kt` | Ported. Courses are indexed in AndroidX AppSearch local storage when a catalog opens, and published to platform storage when the device has it. In-app search still uses `SearchEngine`. AppSearch is consulted only when that search returns nothing. `SearchEngine` tests do not depend on the native Icing library. |
 | Settings, disclaimer, license, export/import | Settings screen, Room, JSON | Ported. Dynamic color and dark mode are included. |
-| iCloud / CloudKit sync | — | Not ported. There is no CloudKit on Android. Local Room storage plus JSON export/import is the replacement. `CloudSyncTests.swift` was not ported. Device-only fields (student name and id, last seat check) simply stay in the local document. |
+| iCloud / CloudKit sync | — | Not ported. There is no CloudKit on Android. Local Room storage plus JSON export/import is the replacement. `CloudSyncTests.swift` was not ported. |
 
 ## Swift file areas
 
@@ -40,15 +44,19 @@ The Apple targets (iPhone, iPad, Mac) share one logic layer and two SwiftUI shel
 | `Core/Model/Requisite` | `core/model/Requisite.kt` | Ported, including JSON `{s,n}` / `{and}` / `{or}` / `{test,score}` |
 | `Core/Model/CourseEquivalences` | `core/model/Equivalences.kt` | Ported (union-find, order-independent roots) |
 | `Core/Model/CourseTitleMatcher` | `core/model/TitleMatcher.kt` | Ported |
-| `Core/Banner/BannerClient` | `core/banner/BannerClient.kt` | Ported for terms, session, search, one-course refresh. `CatalogBuilder.merge` / `applyCourseRefresh` from the full-catalog scraper are not a background catalog rebuild. |
-| `Core/Banner/BannerParsers`, `CatalogBuilder` | `core/banner/Banner.kt` | Ported |
-| `Core/Banner/CatalogArchive` (LZFSE) | gzip JSON asset | Partial. Round-trip is JSON, not LZFSE. The Fall 2026 snapshot is the same catalog, recompressed. |
+| `Core/Model/CourseInfo`, `CourseInfoStore`, equivalence suggestions | `CourseInfo`, `CourseInfoRepository`, `CourseInfoStore`, `EquivalenceSuggester` | Ported and tested. The degree screen starts the store’s Banner fetch for the plan’s courses, including NUpath attributes. |
+| `Core/Banner/BannerClient` | `core/banner/BannerClient.kt` | Ported: terms, session, paged section download, subjects, campuses, attributes, offered-course probe, one-course refresh, catalog entry (`fetchCourseInfo`), and per-course section search (`fetchSections`, used for attributes) |
+| `Core/Banner/BannerParsers`, `CatalogBuilder` | `core/banner/Banner.kt` | Ported, including `merge` and `applyCourseRefresh` |
+| `Core/Banner/CatalogArchive` (LZFSE) | `CatalogStore` JSON, gzip asset | Partial. The on-disk format is JSON. The Fall 2026 snapshot is the same catalog, gzipped. LZFSE is not read. |
+| `Services/CatalogRepository` | `data/CatalogStore.kt`, `AppModel.openTerm` | Ported for load, freshness, save, remote term list, and full-term sync |
+| `Services/OfferingHistory` | `logic/offering/OfferingHistory.kt`, `OfferingHistoryRepository.kt` | Ported |
 | `Core/ProgramCatalog` | `logic/degree/ProgramCatalog.kt` | Ported (edition URLs, program index, requirement tables) |
 | `Logic/Search` | `logic/search/SearchEngine.kt`, `CatalogIndex.kt` | Ported |
-| `Logic/Schedule` generator, filters, preferences, scoring, ICS | `logic/schedule/Schedule.kt` | Partial on scoring weights and sampling; behavior covered by the ported generator tests |
+| `Logic/Schedule` generator, scoring, sampler, reasons, notices, blockers, ICS, calendar | `Schedule.kt`, `ScheduleEngine.kt`, `ScheduleScoring.kt`, `ScheduleSupport.kt`, `ScheduleExport.kt` | Ported |
 | `Logic/Schedule/ScheduleAssistant` | `logic/nl/PreferencesParser.kt` | Ported without a language model |
-| `Logic/DegreePlan` format, PDF, analysis, autofill | `logic/degree/DegreePlan.kt`, `DegreePlanPdf.kt` | Ported |
-| `Logic/DegreeAudit` | `logic/degree/DegreeAudit.kt` | Partial (see audit row) |
+| `Logic/DegreePlan` format, PDF, analysis, autofill, reordering, editing | `DegreePlan.kt`, `DegreePlanPdf.kt`, `DegreePlanReordering.kt`, `DegreePlanEditing.kt` | Ported |
+| `Logic/DegreeAudit`, petition questions | `AuditEngine.kt`, `DegreePetitionQuestions.kt` | Ported |
+| `Logic/DegreePlan` substitution editing, renumbering, note filters, substitute rows | `DegreePresentation.kt` | Ported |
 | `Logic/NUpath` | `NUpathMatching` inside `DegreeAudit.kt` | Ported (13 requirements, limited areas, co-op note) |
 | `Logic/Watchlist` | `logic/watchlist/Watchlist.kt` | Ported |
 | `Logic/Rooms` | `logic/rooms/Rooms.kt` | Ported |
@@ -62,10 +70,41 @@ The Apple targets (iPhone, iPad, Mac) share one logic layer and two SwiftUI shel
 | Mac SwiftUI windows | same screens, `NavigationSuiteScaffold` | Partial. No separate Mac menu bar or multi-window. |
 | Widgets extension | `widget/Widgets.kt`, manifest receivers | Ported |
 | App Intents | `res/xml/shortcuts.xml` | Ported as shortcuts |
-| Tests under `NEUClassSearchTests` | `app/src/test/java/app/termorganize/LogicTests.kt`, `AppUiTest.kt` | Partial. Core, Banner parser, search, generator, degree-plan import/PDF, watchlist, rooms, widgets, active term, preferences, a small audit, and a Robolectric home/search flow are ported. Cloud sync, the 160-seed optimal-matching property test, petition questions, and Mac-only presentation tests are not. |
+| Spotlight | `CourseAppSearch` | Ported as AndroidX AppSearch. See the feature row. |
 
 ## Tests
 
-`LogicTests` follows `CoreModelTests`, `BannerParserTests`, `SearchEngineTests`, `ScheduleGeneratorTests`, `ScheduleLogicTests`, `DegreePlanTests` (parse, format, PDF round-trip, prerequisites, autofill, primary plan), `ShellSupportTests` watchlist and room cases, and a preferences sentence. `AppUiTest` opens the home screen, checks the disclaimer, searches `CS 3000`, and expects Algorithms.
+Ported assertion-by-assertion, unless a row says otherwise:
 
-Live Banner is used by Refresh seats and Older terms. Unit tests do not require the network; they use the bundled catalog. If Banner is down, those buttons report the error and leave the snapshot in place.
+| Swift suite | Android |
+| --- | --- |
+| `CoreModelTests`, `BannerParserTests`, `SearchEngineTests` | `LogicTests` |
+| `ScheduleGeneratorTests`, `ScheduleLogicTests` | `LogicTests` |
+| `SchedulePreferencesTests` weight table, filters, ranking, reasons, sampler, summary, presets, lenient JSON, draft grounding, blockers, survey context, reorder bridge | `SchedulePreferencesTests` (`ScheduleScoringTests`, `SchedulePreferencesFilterTests`, `SchedulePreferencesRankingTests`, `ScheduleReasonTests`, `SchedulePreferencesModelTests`, `ScheduleDraftTests`, `ScheduleBlockerTests`, `SchedulePreferencesContextTests`, `ScheduleReorderBridgeTests`, `SchedulePreferencesCatalogTests`) |
+| `DegreeRequirementsTests`, `DegreeNUpathTests`, `DegreeAuditMatchingTests` | `DegreeAuditTests` |
+| `DegreePlanTests` parse, format, PDF round-trip, prerequisites, autofill | `LogicTests` |
+| `ShellSupportTests` watchlist and rooms, preferences sentence, widgets, active term | `LogicTests` |
+| `PrerequisiteDataTests` offering history, repositories, reordering, equivalences, title matcher, suggester, course-info store | `RemainingLogicTests`, `PortedSuiteTests` |
+| `DegreeSubstitutionPresentationTests` | `RemainingLogicTests` |
+| Calendar: one event per meeting, `DURATION` + `RRULE`, finals, permission denied | `ScheduleCalendarTests`, `ScheduleCalendarPermissionTest` |
+| Catalog freshness and `CatalogBuilder.merge` | `CatalogCacheTests` |
+| `ScheduleSupportTests`, `SchedulePlanActionsTests` | `ScheduleSupportTests` |
+| `CatalogSupportTests` day presets, browse text, popular subjects, professor notes, rooms wording | `CatalogAndDegreePresentationTests` |
+| `DegreePlanMacSupportTests` reorder, summary, requirement listing | `CatalogAndDegreePresentationTests` |
+| `DegreeNUpathTests` attribute repository | `CourseAttributeRepositoryTests` |
+| Home disclaimer and search `CS 3000` | `AppUiTest` (Robolectric) and `AppInstrumentedTest` (emulator, UiAutomator) |
+
+Not ported, or only partly covered:
+
+- `CloudSyncTests` (CloudKit record merge, fingerprints, and account state). There is no CloudKit client. Local Room storage plus JSON export/import is the replacement. The merge rules were not reimplemented.
+- `SchedulePreferencesTests` sentences that only an on-device Apple Intelligence model would fill. The deterministic parser covers the ported draft cases (times, bands, firmness, other languages, the block cap, and failure messages). It does not call a language model.
+- `DegreePlanMacSupportTests` and `ShellSupportTests` cases that only assert Mac window and menu structure.
+- `CatalogSupportTests` cases that only assert Apple file-presenter and LZFSE archive bytes. `CoreModelTests.catalogArchiveRoundTrip` is the same gap: the bundled catalog is gzip JSON, not an LZFSE archive.
+- Resolved plans do not carry a `CalendarEvent` list. Calendar rows are built by `ScheduleExporter.events` (one event per weekly meeting, plus each final) and inserted by `insertAll`.
+- `CourseAppSearch` on the JVM cannot load AndroidX AppSearch’s native Icing library. On a device the APK loads it. The unit test accepts a quiet empty result when the library is missing.
+
+`CourseAppSearchTest` checks that a missing Icing native library does not throw and does not invent hits. The library loads from the APK on a device; the JVM unit-test runner has no Android `liblog`.
+
+Live Banner is used by Refresh this term, Refresh seats, Older terms, offering history, course-catalog lookup, and section-attribute lookup. Unit tests do not require the network. If Banner is down, those actions report the error and leave the snapshot in place.
+
+`connectedDebugAndroidTest` passed on an Android 14 AOSP ATD emulator (AVD `nto`, software CPU). The home test waits with UiAutomator: the catalog decode and the progress indicator keep the main looper busy, so the Compose test rule never sees an idle app on that emulator. Robolectric covers the same disclaimer and CS 3000 search.

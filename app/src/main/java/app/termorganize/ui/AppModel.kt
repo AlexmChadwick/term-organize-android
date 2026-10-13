@@ -18,28 +18,42 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.termorganize.core.banner.BannerClient
+import app.termorganize.core.banner.BannerParsers
+import app.termorganize.core.banner.CatalogBuilder
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.Course
+import app.termorganize.core.model.CourseEquivalences
+import app.termorganize.core.model.CourseInfo
 import app.termorganize.core.model.CourseKey
+import app.termorganize.core.model.HONORS_ATTRIBUTE_CODE
 import app.termorganize.core.model.CourseSection
 import app.termorganize.core.model.DaySet
+import app.termorganize.core.model.Requisite
 import app.termorganize.core.model.Term
 import app.termorganize.core.model.TermCatalog
+import app.termorganize.core.model.TermMenu
 import app.termorganize.data.AppDatabase
+import app.termorganize.data.CatalogStore
 import app.termorganize.data.UserRow
 import app.termorganize.data.WidgetFiles
 import app.termorganize.logic.degree.CatalogProgram
 import app.termorganize.logic.degree.CatalogYear
 import app.termorganize.logic.degree.CourseEquivalence
+import app.termorganize.logic.degree.DegreeCourseAttributes
 import app.termorganize.logic.degree.DegreePlan
+import app.termorganize.logic.degree.DegreePlanAnalysis
 import app.termorganize.logic.degree.DegreePlanAutofill
+import app.termorganize.logic.degree.DegreePlanEditing
 import app.termorganize.logic.degree.DegreePlanCourse
 import app.termorganize.logic.degree.DegreePlanFormat
 import app.termorganize.logic.degree.DegreePlanImportException
 import app.termorganize.logic.degree.DegreePlanPdf
+import app.termorganize.logic.degree.DegreePlanReordering
 import app.termorganize.logic.degree.DegreePlanTerm
 import app.termorganize.logic.degree.PlanCourse
 import app.termorganize.logic.degree.PlanSeason
+import app.termorganize.logic.degree.PrerequisiteLookup
+import app.termorganize.logic.degree.RequisiteAnswer
 import app.termorganize.logic.degree.ProgramCatalogParser
 import app.termorganize.logic.degree.ProgramRequirements
 import app.termorganize.logic.degree.RequirementSubstitution
@@ -49,14 +63,32 @@ import app.termorganize.logic.degree.UserData
 import app.termorganize.logic.degree.UserJson
 import app.termorganize.logic.degree.WatchItem
 import app.termorganize.logic.nl.PreferencesParser
+import app.termorganize.logic.offering.AttributeFetching
+import app.termorganize.logic.offering.CourseAttributeRepository
+import app.termorganize.logic.offering.CourseInfoFetching
+import app.termorganize.logic.offering.CourseInfoRepository
+import app.termorganize.logic.offering.CourseInfoStore
+import app.termorganize.logic.offering.OfferingFetching
+import app.termorganize.logic.offering.OfferingHistory
+import app.termorganize.logic.offering.OfferingHistoryRepository
+import app.termorganize.logic.schedule.PlanEditing
+import app.termorganize.logic.schedule.ScheduleCalendarOutcome
+import app.termorganize.logic.schedule.analyzeEmptyResult
 import app.termorganize.logic.schedule.ScheduleCourseInput
+import app.termorganize.logic.schedule.ScheduleReorderOption
+import app.termorganize.logic.schedule.ScheduleReorderSuggestions
+import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.schedule.ScheduleExporter
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerationResult
 import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.SchedulePreferences
 import app.termorganize.logic.schedule.SchedulePreset
+import app.termorganize.logic.schedule.calendarText
+import app.termorganize.logic.schedule.events
+import app.termorganize.logic.schedule.insertAll
 import app.termorganize.logic.search.CatalogIndex
+import app.termorganize.logic.search.CourseAppSearch
 import app.termorganize.logic.search.SearchEngine
 import app.termorganize.logic.search.SearchFilters
 import app.termorganize.logic.search.SearchQuery
@@ -69,6 +101,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -76,14 +110,30 @@ import java.util.zip.GZIPInputStream
 
 class AppModel(app: Application) : AndroidViewModel(app) {
     private val dao = AppDatabase.create(app).userDao()
+    private val catalogs = CatalogStore(File(app.filesDir, "catalogs")) { code ->
+        if (code == "202710") loadBundled() else null
+    }
+    private val offeringDirectory = File(app.filesDir, "course-info")
     private val _index = MutableStateFlow<CatalogIndex?>(null)
     private val _user = MutableStateFlow(UserData())
-    private val _status = MutableStateFlow("Loading the Fall 2026 catalog…")
+    private val _status = MutableStateFlow("Loading the catalog…")
     private val _error = MutableStateFlow<String?>(null)
     private val _program = MutableStateFlow<ProgramRequirements?>(null)
     private val _programs = MutableStateFlow<List<CatalogProgram>>(emptyList())
     private val _otherTerms = MutableStateFlow<List<Term>>(emptyList())
     private val _olderNote = MutableStateFlow<String?>(null)
+    private val _availableTerms = MutableStateFlow<List<Term>>(emptyList())
+    private val courseInfoLock = Mutex()
+    private val courseInfos by lazy {
+        CourseInfoStore(
+            CourseInfoRepository(BannerCourseInfoFetcher(), offeringDirectory),
+            OfferingHistoryRepository(BannerOfferingFetcher(), offeringDirectory),
+            attributeRepository = CourseAttributeRepository(BannerAttributeFetcher(), offeringDirectory),
+        )
+    }
+    private val _courseInfo = MutableStateFlow(CourseInfoSnapshot())
+    private val _offering = MutableStateFlow(OfferingHistory.empty)
+    private val _syncLabel = MutableStateFlow("")
     val index: StateFlow<CatalogIndex?> = _index
     val user: StateFlow<UserData> = _user
     val status: StateFlow<String> = _status
@@ -92,22 +142,198 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     val programs: StateFlow<List<CatalogProgram>> = _programs
     val otherTerms: StateFlow<List<Term>> = _otherTerms
     val olderNote: StateFlow<String?> = _olderNote
+    val availableTerms: StateFlow<List<Term>> = _availableTerms
+    val offering: StateFlow<OfferingHistory> = _offering
+    val courseInfo: StateFlow<CourseInfoSnapshot> = _courseInfo
+    val syncLabel: StateFlow<String> = _syncLabel
 
     init {
         viewModelScope.launch {
             try {
                 val stored = withContext(Dispatchers.IO) { dao.get()?.let { UserJson.decode(it.json) } }
                 if (stored != null) _user.value = stored
-                val catalog = withContext(Dispatchers.IO) { loadBundled() }
-                _index.value = CatalogIndex.build(catalog)
-                _status.value = ""
-                publishWidget()
+                val catalog = withContext(Dispatchers.IO) { catalogs.load("202710") ?: loadBundled() }
+                adopt(catalog)
+                refreshTermList()
             } catch (error: Throwable) {
                 _status.value = "Couldn’t load the catalog. ${error::class.java.simpleName}: ${error.message}"
                 _error.value = error.message ?: error.javaClass.simpleName
             }
         }
     }
+
+    private fun adopt(catalog: TermCatalog) {
+        _index.value = CatalogIndex.build(catalog)
+        _status.value = ""
+        _syncLabel.value = ""
+        publishWidget()
+        val courses = catalog.courses
+        val code = catalog.term.code
+        viewModelScope.launch(Dispatchers.IO) {
+            CourseAppSearch.index(getApplication(), code, courses)
+        }
+    }
+
+    fun termLabel(code: String): String {
+        val known = (_availableTerms.value + _otherTerms.value + listOfNotNull(_index.value?.term))
+            .firstOrNull { it.code == code }
+        return known?.name ?: code
+    }
+
+    fun openTermCode(code: String) {
+        val known = (_availableTerms.value + _otherTerms.value + listOfNotNull(_index.value?.term))
+            .firstOrNull { it.code == code }
+        openTerm(known ?: Term(code, "Term $code"))
+    }
+
+    fun openTerm(term: Term, refresh: Boolean = false) {
+        viewModelScope.launch {
+            if (!refresh && _index.value?.term?.code == term.code && _index.value != null) return@launch
+            val cached = if (refresh) null else withContext(Dispatchers.IO) { catalogs.load(term.code) }
+            if (cached != null) {
+                adopt(cached)
+                return@launch
+            }
+            val downloaded = runCatching { withContext(Dispatchers.IO) { downloadTerm(term) } }
+            downloaded.onSuccess { adopt(it) }.onFailure {
+                _syncLabel.value = ""
+                _status.value = ""
+                _error.value = it.message ?: "Couldn’t download ${term.name}."
+            }
+        }
+    }
+
+    fun refreshOpenTerm() {
+        val term = _index.value?.term ?: return
+        openTerm(term, refresh = true)
+    }
+
+    private suspend fun downloadTerm(term: Term): TermCatalog {
+        _syncLabel.value = "Connecting to Banner…"
+        return BannerClient.shared { client ->
+            val sections = client.fetchAllSections(term.code) { fetched, total ->
+                _syncLabel.value = "Downloading sections $fetched of $total"
+            }
+            val subjects = runCatching { client.fetchSubjects(term.code) }.getOrNull()
+            val campuses = runCatching { client.fetchCampuses(term.code) }.getOrNull()
+            val attributes = runCatching { client.fetchAttributes(term.code) }.getOrNull()
+            _syncLabel.value = "Saving catalog…"
+            val existing = catalogs.load(term.code)
+            val knowledge = knowledgeExcept(term.code)
+            val merged = CatalogBuilder.merge(existing, sections, term, subjects, campuses, attributes, knowledge)
+            catalogs.save(merged)
+            merged
+        }
+    }
+
+    private fun knowledgeExcept(termCode: String): Map<CourseKey, Course> {
+        val result = LinkedHashMap<CourseKey, Course>()
+        for (code in catalogs.localCodes()) {
+            if (code == termCode) continue
+            val other = catalogs.load(code) ?: continue
+            for (course in other.courses) {
+                if (course.detailsLoaded && result[course.key] == null) result[course.key] = course
+            }
+        }
+        return result
+    }
+
+    private fun refreshTermList() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val remote = runCatching { BannerClient.shared { it.fetchTerms(40) } }
+            val terms = remote.getOrElse { catalogs.loadRemoteTerms() }
+            if (remote.isSuccess) catalogs.saveRemoteTerms(terms)
+            val shown = TermMenu.listed(terms, catalogs.localCodes())
+            _availableTerms.value = shown.ifEmpty { listOfNotNull(_index.value?.term) }
+            _otherTerms.value = terms.sortedByDescending { it.code }
+        }
+    }
+
+    fun refreshOffering(plan: DegreePlan) {
+        val keys = (plan.completed + plan.terms.flatMap { it.courses }).mapNotNull { it.key }.distinct()
+        if (keys.isEmpty()) {
+            _offering.value = OfferingHistory.empty
+            return
+        }
+        viewModelScope.launch {
+            val loaded = listOfNotNull(_index.value)
+            val history = runCatching {
+                withContext(Dispatchers.IO) {
+                    OfferingHistoryRepository(BannerOfferingFetcher(), offeringDirectory).history(keys, loaded)
+                }
+            }.getOrElse { OfferingHistory(checkedKeys = keys.toSet()) }
+            _offering.value = history
+        }
+    }
+
+    fun refreshCourseInfo(plan: DegreePlan) {
+        val keys = (plan.completed + plan.terms.flatMap { it.courses }).mapNotNull { it.key }.distinct()
+        if (keys.isEmpty()) {
+            _courseInfo.value = CourseInfoSnapshot()
+            return
+        }
+        val loaded = listOfNotNull(_index.value)
+        viewModelScope.launch {
+            val snapshot = runCatching {
+                withContext(Dispatchers.IO) {
+                    courseInfoLock.withLock {
+                        courseInfos.load(keys, loaded)
+                        courseInfos.loadAttributes(keys, loaded)
+                        CourseInfoSnapshot(
+                            courseInfos.infosSnapshot(),
+                            courseInfos.equivalences(plan),
+                            courseInfos.degreeAttributes(plan),
+                        )
+                    }
+                }
+            }.getOrElse { CourseInfoSnapshot() }
+            _courseInfo.value = snapshot
+        }
+    }
+
+    fun coursePrerequisite(key: CourseKey, plan: DegreePlan, completed: Boolean, termIndex: Int): DegreePlanAnalysis.PrerequisiteStatus {
+        val catalog = _index.value
+        val snapshot = _courseInfo.value
+        val lookup = snapshot.lookup()
+        val term = if (completed) -1 else termIndex
+        return DegreePlanAnalysis.prerequisiteStatus(key, term, plan, catalog, lookup, snapshot.equivalences)
+    }
+
+    fun offeringLine(key: CourseKey?, season: PlanSeason?): String? {
+        if (key == null) return null
+        val history = _offering.value
+        if (!history.isChecked(key)) return null
+        return if (season == null) history.summary(key) else history.summary(key, season)
+    }
+
+    fun moveSuggestions(plan: DegreePlan, term: DegreePlanTerm): List<DegreePlanReordering.Suggestion> {
+        val history = _offering.value
+        if (history.checkedTerms.isEmpty()) return emptyList()
+        val blocking = term.courses.mapNotNull { it.key }.filter { history.isLikelyOffered(it, term.season) == false }
+        if (blocking.isEmpty()) return emptyList()
+        return DegreePlanReordering.suggestions(
+            plan, term.id, blocking, history, ::prerequisitesOf, plan.declaredEquivalences,
+        )
+    }
+
+    fun applyMove(planId: String, suggestion: DegreePlanReordering.Suggestion) {
+        updateDegree(planId) { DegreePlanReordering.apply(suggestion, it) }
+    }
+
+    private fun prerequisitesOf(key: CourseKey): PrerequisiteLookup {
+        val course = _index.value?.course(key)
+        if (course != null && course.detailsLoaded) {
+            val prereqs: Requisite? = course.prereqs
+            return if (prereqs == null) PrerequisiteLookup.None else PrerequisiteLookup.Needs(prereqs)
+        }
+        val known = _courseInfo.value.lookup()(key)
+        return when (known) {
+            is RequisiteAnswer.Known -> if (known.requisite == null) PrerequisiteLookup.None else PrerequisiteLookup.Needs(known.requisite)
+            RequisiteAnswer.Unknown -> PrerequisiteLookup.Unknown
+        }
+    }
+
+    fun courseIndexHits(query: String): List<CourseAppSearch.Hit> = CourseAppSearch.search(getApplication(), query)
 
     private fun loadBundled(): TermCatalog {
         val assets = getApplication<Application>().assets
@@ -166,17 +392,28 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun generate(plan: SchedulePlan): ScheduleGenerationResult {
         val index = _index.value ?: return ScheduleGenerationResult()
-        val inputs = plan.courses.map { course ->
-            ScheduleCourseInput(
-                course.key,
-                true,
-                index.sections(course.key),
-                course.excludedCRNs,
-                minCredits = index.course(course.key)?.minCredits?.toInt() ?: 0,
-                maxCredits = index.course(course.key)?.maxCredits?.toInt() ?: 0,
-            )
-        }
-        return ScheduleGenerator.generate(inputs, plan.filters, plan.preferences ?: SchedulePreferences())
+        val inputs = ScheduleCourseInput.inputs(plan, index)
+        val preferences = plan.preferences ?: SchedulePreferences()
+        val result = ScheduleGenerator.generate(inputs, plan.filters, preferences)
+        if (result.totalFound > 0) return result
+        return result.copy(noResults = ScheduleGenerator.analyzeEmptyResult(inputs, plan.filters, preferences, result.diagnostics))
+    }
+
+    fun scheduleMoves(blocking: List<CourseKey>): List<ScheduleReorderOption> {
+        if (blocking.isEmpty()) return emptyList()
+        val degree = _user.value.degreePlans.firstOrNull { it.isPrimary } ?: return emptyList()
+        val term = _index.value?.term ?: return emptyList()
+        val origin = degree.sorted().termMatching(term) ?: return emptyList()
+        if (blocking.none { key -> origin.courses.any { it.key == key } }) return emptyList()
+        val suggestions = DegreePlanReordering.suggestions(
+            degree, origin.id, blocking, _offering.value, ::prerequisitesOf, degree.declaredEquivalences,
+        )
+        return suggestions.map { ScheduleReorderSuggestions.option(it, origin) }
+    }
+
+    fun applyReorder(option: ScheduleReorderOption) {
+        val degree = _user.value.degreePlans.firstOrNull { it.isPrimary } ?: return
+        updateDegree(degree.id) { option.apply(it) }
     }
 
     fun updatePlan(id: String, block: (SchedulePlan) -> SchedulePlan) {
@@ -187,7 +424,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun createSchedule(name: String) {
         val term = _index.value?.term?.code ?: "202710"
         val plan = SchedulePlan(
-            name = name.ifBlank { "Schedule" },
+            name = name.ifBlank { PlanEditing.nextPlanName(_user.value.plans.map { it.name }) },
             termCode = term,
             isPrimary = _user.value.plans.none { it.termCode == term },
         )
@@ -204,10 +441,37 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         update { it.copy(plans = it.plans.filter { plan -> plan.id != id }) }
     }
 
+    fun duplicateSchedule(id: String) {
+        val plan = _user.value.plans.firstOrNull { it.id == id } ?: return
+        val now = System.currentTimeMillis()
+        val copy = plan.copy(
+            id = java.util.UUID.randomUUID().toString(),
+            name = "${plan.name} Copy",
+            isPrimary = false,
+            createdAt = now,
+            updatedAt = now,
+        )
+        update { it.copy(plans = it.plans + copy) }
+    }
+
     fun removeCourse(planId: String, key: CourseKey) {
         updatePlan(planId) { plan ->
             val crns = _index.value?.sections(key)?.map { it.crn }?.toSet().orEmpty()
-            plan.copy(courses = plan.courses.filter { it.key != key }, selectedCRNs = plan.selectedCRNs.filter { it !in crns })
+            plan.copy(
+                courses = plan.courses.filter { it.key != key },
+                selectedCRNs = plan.selectedCRNs.filter { it !in crns },
+                favoriteCombinations = plan.favoriteCombinations.filter { combo -> combo.none { it in crns } },
+            )
+        }
+    }
+
+    fun forgetSections(planId: String, crns: List<String>) {
+        val drop = crns.toSet()
+        updatePlan(planId) { plan ->
+            plan.copy(
+                selectedCRNs = plan.selectedCRNs.filter { it !in drop },
+                favoriteCombinations = plan.favoriteCombinations.filter { combo -> combo.none { it in drop } },
+            )
         }
     }
 
@@ -263,6 +527,12 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun setPrimaryDegree(id: String) {
         update { data -> data.copy(degreePlans = data.degreePlans.map { it.copy(isPrimary = it.id == id) }) }
+    }
+
+    fun duplicateDegree(id: String) {
+        val plan = _user.value.degreePlans.firstOrNull { it.id == id } ?: return
+        val copy = DegreePlanEditing.duplicate(plan, _user.value.degreePlans.map { it.name })
+        update { it.copy(degreePlans = it.degreePlans + copy) }
     }
 
     fun deleteDegree(id: String) {
@@ -324,6 +594,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearError() { _error.value = null }
+    fun report(message: String) { _error.value = message }
 
     fun fetchPrograms(page: String = "https://catalog.northeastern.edu/undergraduate/") {
         viewModelScope.launch {
@@ -442,9 +713,26 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun exportIcs(plan: SchedulePlan): Uri {
         val index = _index.value
-        val sections = plan.selectedCRNs.mapNotNull { index?.section(it) }
-        val text = ScheduleExporter.ics(index?.term?.name ?: plan.termCode, plan.name, sections, "2026-09-09", "2026-12-20")
+        val text = if (index == null) {
+            ScheduleExporter.ics(plan.termCode, plan.name, emptyList(), null, null)
+        } else {
+            val (events, _) = ScheduleExporter.events(plan, index)
+            ScheduleExporter.calendarText(events, "${plan.name} – ${index.term.name}")
+        }
         return writeShare("${plan.name}.ics", text.toByteArray(), "text/calendar")
+    }
+
+    /** Writes every weekly meeting and every final into the device calendar. */
+    fun insertCalendar(plan: SchedulePlan): String {
+        val index = _index.value ?: return "Open a catalog before adding classes to the calendar."
+        val (events, summary) = ScheduleExporter.events(plan, index)
+        return when (val outcome = ScheduleExporter.insertAll(getApplication(), events)) {
+            is ScheduleCalendarOutcome.Added ->
+                "Added ${outcome.count} events (${summary.weeklyMeetings} meetings, ${summary.finalExams} finals)."
+            ScheduleCalendarOutcome.NothingToAdd -> "There are no scheduled classes to export yet."
+            ScheduleCalendarOutcome.Denied -> "Calendar permission is required to add every meeting."
+            is ScheduleCalendarOutcome.Failed -> outcome.message
+        }
     }
 
     fun shareImage(plan: SchedulePlan): Uri {
@@ -552,4 +840,42 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         sections.indices.any { i -> sections.indices.any { j -> j > i && sections[i].conflicts(sections[j]) } }
 
     fun freeDayLabel(days: DaySet) = days.shortLabel
+}
+
+private class BannerOfferingFetcher : OfferingFetching {
+    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
+    override suspend fun offeredCourses(term: String, courses: List<CourseKey>): Set<CourseKey> =
+        BannerClient.shared { it.fetchOfferedCourses(term, courses) }
+}
+
+private class BannerAttributeFetcher : AttributeFetching {
+    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
+    override suspend fun sectionAttributes(term: String, courses: List<CourseKey>): Map<CourseKey, Set<String>> {
+        val sections = BannerClient.shared { it.fetchSections(term, courses) }
+        return sections.filterValues { it.isNotEmpty() }.mapValues { (_, listed) ->
+            listed.flatMap { it.sectionAttributes.orEmpty() }.map { it.code }.filter { it != HONORS_ATTRIBUTE_CODE }.toSet()
+        }
+    }
+}
+
+private class BannerCourseInfoFetcher : CourseInfoFetching {
+    private val subjects = HashMap<String, BannerParsers.SubjectLookup>()
+    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
+    override suspend fun catalogEntry(key: CourseKey, term: String): CourseInfo? = BannerClient.shared { client ->
+        client.fetchCourseInfo(key, term) {
+            subjects[term] ?: BannerParsers.SubjectLookup(client.fetchSubjects(term)).also { subjects[term] = it }
+        }
+    }
+}
+
+/** Prerequisites learned for courses the open term does not list, plus equivalences from that lookup. */
+data class CourseInfoSnapshot(
+    val infos: Map<CourseKey, CourseInfo> = emptyMap(),
+    val equivalences: CourseEquivalences = CourseEquivalences.none,
+    val attributes: DegreeCourseAttributes = DegreeCourseAttributes.none,
+) {
+    fun lookup(): (CourseKey) -> RequisiteAnswer = { key ->
+        val info = infos[key]
+        if (info == null) RequisiteAnswer.Unknown else RequisiteAnswer.Known(info.prerequisites)
+    }
 }

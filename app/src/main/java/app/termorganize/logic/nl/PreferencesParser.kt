@@ -58,6 +58,24 @@ data class SchedulePreferencesDraft(
             daysOff.isEmpty() && layout == null && maxClassesPerDay == null && maxHoursPerDay == null &&
             breaks == null && wantsLunchBreak != true && blockedTimes.isEmpty() && format == null && seats == null
 
+    val filledCount: Int
+        get() {
+            var n = 0
+            if (preferredTimes.isNotEmpty()) n++
+            if (avoidedTimes.isNotEmpty()) n++
+            if (earliestStart != null) n++
+            if (latestEnd != null) n++
+            if (daysOff.isNotEmpty()) n++
+            if (layout != null) n++
+            if (maxClassesPerDay != null || maxHoursPerDay != null) n++
+            if (breaks != null) n++
+            if (wantsLunchBreak == true) n++
+            n += blockedTimes.size
+            if (format != null) n++
+            if (seats != null) n++
+            return n
+        }
+
     fun applied(base: SchedulePreferences): SchedulePreferences {
         var p = base
         val times = p.timeOfDay.toMutableMap()
@@ -85,7 +103,7 @@ data class SchedulePreferencesDraft(
         }
         if (wantsLunchBreak == true && p.lunch == null) p = p.copy(lunch = LunchBreak())
         val blocks = p.blockedTimes.toMutableList()
-        for (block in blockedTimes.take(8)) {
+        for (block in blockedTimes.take(MAX_BLOCKED_TIMES)) {
             val start = minutes(block.start) ?: continue
             var end = minutes(block.end) ?: continue
             if (end <= start && end < 12 * 60 && end + 12 * 60 <= 24 * 60) end += 12 * 60
@@ -112,7 +130,7 @@ data class SchedulePreferencesDraft(
     }
 
     fun grounded(description: String): SchedulePreferencesDraft {
-        if (!isEnglish(description)) return this
+        if (!ScheduleAssistant.isEnglish(description)) return this
         val text = " ${description.lowercase(Locale.US)} "
         fun mentions(cues: List<String>) = cues.any { it in text }
         var copy = this
@@ -135,6 +153,8 @@ data class SchedulePreferencesDraft(
     }
 
     companion object {
+        const val MAX_BLOCKED_TIMES = 8
+
         fun minutes(text: String?): Int? {
             if (text == null) return null
             var s = text.lowercase(Locale.US).filter { !it.isWhitespace() && it != '.' }
@@ -168,13 +188,6 @@ data class SchedulePreferencesDraft(
             }
             val total = h * 60 + minute
             return if (total <= 24 * 60) total else null
-        }
-
-        private fun isEnglish(text: String): Boolean {
-            val letters = text.count { it.isLetter() }
-            if (letters == 0) return true
-            val latin = text.count { it in 'A'..'Z' || it in 'a'..'z' || it == ' ' }
-            return latin >= letters / 2
         }
 
         private fun hasQuantity(text: String): Boolean {
@@ -289,4 +302,52 @@ object PreferencesParser {
     }
 
     private fun number(token: String) = token.toIntOrNull() ?: mapOf("one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5)[token]
+}
+
+/**
+ * The on-device model is not available on Android. These messages are the same ones the survey
+ * shows when a description cannot be used; [PreferencesParser] is what actually reads a sentence.
+ */
+object ScheduleAssistant {
+    fun isEnglish(text: String): Boolean {
+        val letters = text.filter { it.isLetter() }
+        if (letters.isEmpty()) return true
+        return letters.none { it.code > 127 }
+    }
+
+    enum class Availability(val note: String?) {
+        AVAILABLE(null),
+        DEVICE_NOT_ELIGIBLE("Apple Intelligence isn\u2019t available on this device, but the survey below still works."),
+        NOT_ENABLED("Turn on Apple Intelligence in Settings to describe your week in your own words. The survey below works without it."),
+        NOT_READY("Apple Intelligence isn\u2019t ready yet. Try again later; the survey below works in the meantime."),
+        UNSUPPORTED_LANGUAGE("Apple Intelligence doesn\u2019t support your language yet, but the survey below still works."),
+        UNAVAILABLE("Apple Intelligence isn\u2019t available right now, but the survey below still works."),
+    }
+
+    sealed class Failure {
+        data object EmptyDescription : Failure()
+        data object DescriptionTooLong : Failure()
+        data object Guardrail : Failure()
+        data object ContextTooLarge : Failure()
+        data object UnsupportedLanguage : Failure()
+        data object Busy : Failure()
+        data object TimedOut : Failure()
+        data object NothingFound : Failure()
+        data class Failed(val detail: String) : Failure()
+        data class Unavailable(val availability: Availability) : Failure()
+
+        val message: String
+            get() = when (this) {
+                is Unavailable -> availability.note ?: "Apple Intelligence isn\u2019t available right now."
+                EmptyDescription -> "Describe the schedule you want first."
+                DescriptionTooLong -> "That\u2019s a lot to read at once. Try describing the most important things in a few sentences."
+                Guardrail -> "Apple Intelligence couldn\u2019t use that description. Try rephrasing it, or fill in the survey yourself."
+                ContextTooLarge -> "That description is too long for Apple Intelligence. Shorten it, or fill in the survey yourself."
+                UnsupportedLanguage -> "Apple Intelligence can\u2019t read that language yet. Try English, or fill in the survey yourself."
+                Busy -> "Apple Intelligence is busy right now. Try again in a moment."
+                TimedOut -> "Apple Intelligence took too long. Try a shorter description, or fill in the survey yourself."
+                NothingFound -> "Couldn\u2019t find any schedule wishes in that. Try mentioning times, days or commitments, like \u201cno classes before 10\u201d or \u201cwork Tuesdays 1\u20135\u201d."
+                is Failed -> "Something went wrong reading that. Try again, or fill in the survey yourself."
+            }
+    }
 }

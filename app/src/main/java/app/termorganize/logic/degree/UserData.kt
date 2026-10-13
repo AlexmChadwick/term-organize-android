@@ -5,6 +5,7 @@ package app.termorganize.logic.degree
 
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.CourseKey
+import app.termorganize.core.model.CreditFormatter
 import app.termorganize.core.model.Term
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.SchedulePreferences
@@ -26,6 +27,7 @@ const val COURSE_COLOR_COUNT = 10
 @Serializable
 data class PlanCourse(
     val key: CourseKey,
+    val isRequired: Boolean = true,
     val excludedCRNs: Set<String> = emptySet(),
     val colorIndex: Int = 0,
 ) {
@@ -188,6 +190,26 @@ data class DegreePlanTerm(
     val monthIndex: Int get() = year * 12 + season.startMonth - 1
     val sortKey: Int get() = monthIndex * 4 + season.orderWithinMonth
     fun matches(term: Term) = term.calendarYear == year && season.matches(term.season)
+
+    val degreePlanBannerCode: String
+        get() = when (season) {
+            PlanSeason.FALL -> "${year + 1}10"
+            PlanSeason.WINTER -> "${year}20"
+            PlanSeason.SPRING -> "${year}30"
+            PlanSeason.SUMMER_A -> "${year}40"
+            PlanSeason.SUMMER_FULL -> "${year}50"
+            PlanSeason.SUMMER_B -> "${year}60"
+        }
+
+    fun degreePlanHasEnded(now: Instant = Instant.now()): Boolean {
+        val window = TermCalendar.window(degreePlanBannerCode) ?: return false
+        return window.endInclusive.isBefore(now)
+    }
+}
+
+object DegreePlanText {
+    fun credits(value: Double) = "${CreditFormatter.number(value)} ${if (value == 1.0) "credit" else "credits"}"
+    fun courses(count: Int) = if (count == 1) "1 course" else "$count courses"
 }
 
 @Serializable
@@ -305,6 +327,30 @@ data class DegreePlan(
         if (course == countsAs || declaredEquivalences.areEquivalent(course, countsAs)) return this
         return copy(courseEquivalences = courseEquivalences + CourseEquivalence(course = course, countsAs = countsAs, note = note))
     }
+
+    fun removeEquivalence(id: String): DegreePlan =
+        copy(courseEquivalences = courseEquivalences.filter { it.id != id })
+
+    fun degreePlanUpcomingTerms(now: Instant = Instant.now()): List<DegreePlanTerm> =
+        terms.filter { !it.degreePlanHasEnded(now) }
+
+    fun degreePlanNextTerm(now: Instant = Instant.now()): DegreePlanTerm? =
+        degreePlanUpcomingTerms(now).firstOrNull { it.courses.isNotEmpty() }
+
+    val degreePlanCompletedLine: String
+        get() = if (completed.isEmpty()) "No completed courses yet" else "${DegreePlanText.credits(completedCredits)} completed"
+
+    fun degreePlanNextSummary(now: Instant = Instant.now()): String? {
+        val next = degreePlanNextTerm(now) ?: return null
+        return "${next.name} · ${DegreePlanText.credits(next.credits)} · ${DegreePlanText.courses(next.courses.size)}"
+    }
+
+    fun degreePlanNextLine(now: Instant = Instant.now()): String {
+        degreePlanNextSummary(now)?.let { return "Next: $it" }
+        if (terms.isEmpty()) return "No semesters planned yet"
+        if (degreePlanUpcomingTerms(now).isEmpty()) return "No upcoming semesters"
+        return "No courses planned yet"
+    }
 }
 
 @Serializable
@@ -336,8 +382,13 @@ object UserJson {
                 val primitive = element as? JsonPrimitive ?: return@mapNotNull null
                 if (primitive.isString) primitive.content else null
             } ?: emptyList(),
-            degreePlans = obj.decodeEach("degreePlans", DegreePlan.serializer()),
+            degreePlans = decodeDegreePlans(obj),
         )
+    }
+
+    private fun decodeDegreePlans(obj: JsonObject): List<DegreePlan> {
+        val array = obj["degreePlans"] as? JsonArray ?: return emptyList()
+        return array.mapNotNull { runCatching { DegreePlan.decodeLenient(it) }.getOrNull() }
     }
 
     private fun <T> JsonObject.decodeEach(key: String, serializer: kotlinx.serialization.KSerializer<T>): List<T> {
@@ -350,12 +401,120 @@ object UserJson {
     private fun JsonObject.array(key: String) = this[key] as? JsonArray
 }
 
+fun DegreePlan.Companion.decodeLenient(element: JsonElement): DegreePlan {
+    val obj = element as? JsonObject ?: return AppJson.user.decodeFromJsonElement(serializer(), element)
+    val equivalents = obj["courseEquivalences"]
+    val fixed = if (equivalents != null && equivalents !is JsonArray) {
+        JsonObject(obj.filterKeys { it != "courseEquivalences" })
+    } else obj
+    return AppJson.user.decodeFromJsonElement(serializer(), fixed)
+}
+
+data class ScheduleFromDegree(val plan: SchedulePlan, val isNew: Boolean, val courseCount: Int)
+
+/** What the primary degree plan does with a course, for the tag on a course page. */
+data class CourseDegreePlanStanding(val planId: String, val kind: Kind) {
+    sealed class Kind {
+        data class Completed(val via: CourseKey?) : Kind()
+        data class Planned(val semester: String, val via: CourseKey?) : Kind()
+    }
+
+    val text: String
+        get() = when (val kind = kind) {
+            is Kind.Completed -> kind.via?.let { "Completed via ${it.description}" } ?: "Completed"
+            is Kind.Planned -> kind.via?.let { "Planned via ${it.description} · ${kind.semester}" } ?: "Planned · ${kind.semester}"
+        }
+    val symbol: String
+        get() = when (kind) {
+            is Kind.Completed -> "checkmark.circle.fill"
+            is Kind.Planned -> "calendar"
+        }
+    val spokenText: String
+        get() = when (val kind = kind) {
+            is Kind.Completed -> kind.via?.let { "Completed via ${it.description}, in your degree plan" } ?: "Completed, in your degree plan"
+            is Kind.Planned -> kind.via?.let { "Planned via ${it.description} for ${kind.semester} in your degree plan" }
+                ?: "Planned for ${kind.semester} in your degree plan"
+        }
+}
+
 class UserDataStore(var data: UserData = UserData()) {
     val plans: List<SchedulePlan> get() = data.plans
     val degreePlans: List<DegreePlan> get() = data.degreePlans
     val primaryDegreePlan: DegreePlan? get() = degreePlans.firstOrNull { it.isPrimary } ?: degreePlans.maxByOrNull { it.updatedAt }
 
     fun degreePlan(id: String) = degreePlans.firstOrNull { it.id == id }
+
+    fun plansIn(termCode: String) = plans.filter { it.termCode == termCode }
+
+    fun courseIsInSchedule(termCode: String, key: CourseKey, crn: String? = null): Boolean =
+        plansIn(termCode).any { plan -> plan.contains(key) && (crn == null || crn in plan.selectedCRNs) }
+
+    fun plan(id: String) = plans.firstOrNull { it.id == id }
+
+    fun addCourse(key: CourseKey, planId: String, required: Boolean = true): Boolean {
+        var added = false
+        updatePlan(planId) { plan ->
+            if (plan.contains(key)) plan
+            else {
+                added = true
+                plan.copy(courses = plan.courses + PlanCourse(key, isRequired = required, colorIndex = plan.nextColorIndex))
+            }
+        }
+        return added
+    }
+
+    fun removeCourse(key: CourseKey, planId: String, sectionsOfCourse: List<String> = emptyList()) {
+        val drop = sectionsOfCourse.toSet()
+        updatePlan(planId) { plan ->
+            plan.copy(
+                courses = plan.courses.filter { it.key != key },
+                selectedCRNs = if (drop.isEmpty()) plan.selectedCRNs else plan.selectedCRNs.filter { it !in drop },
+                favoriteCombinations = if (drop.isEmpty()) plan.favoriteCombinations else plan.favoriteCombinations.filter { combo -> combo.none { it in drop } },
+            )
+        }
+    }
+
+    fun courseDegreePlanStanding(key: CourseKey): CourseDegreePlanStanding? {
+        val plan = primaryDegreePlan ?: return null
+        val equivalences = plan.declaredEquivalences
+        val taken = plan.completedKeys
+        val counted = equivalences.satisfier(key, taken)
+        if (counted != null) {
+            return CourseDegreePlanStanding(plan.id, CourseDegreePlanStanding.Kind.Completed(if (counted == key) null else counted))
+        }
+        val direct = plan.terms.firstOrNull { term -> term.courses.any { it.key == key } }
+        if (direct != null) return CourseDegreePlanStanding(plan.id, CourseDegreePlanStanding.Kind.Planned(direct.shortName, null))
+        for (other in equivalences.equivalents(key).sorted()) {
+            val term = plan.terms.firstOrNull { semester -> semester.courses.any { it.key == other } } ?: continue
+            return CourseDegreePlanStanding(plan.id, CourseDegreePlanStanding.Kind.Planned(term.shortName, other))
+        }
+        return null
+    }
+
+    fun scheduleForDegreePlan(semester: DegreePlanTerm, termCode: String): ScheduleFromDegree? {
+        val seen = LinkedHashSet<CourseKey>()
+        val keys = semester.courses.mapNotNull { it.key }.filter { seen.add(it) }
+        if (keys.isEmpty()) return null
+        val existing = plansIn(termCode).firstOrNull { it.courses.map { course -> course.key }.toSet() == keys.toSet() }
+        if (existing != null) return ScheduleFromDegree(existing, false, keys.size)
+        val created = createPlan(DegreePlanEditing.scheduleName(semester, plansIn(termCode).map { it.name }), termCode)
+        for (key in keys) addCourse(key, created.id)
+        val stored = plans.first { it.id == created.id }
+        return ScheduleFromDegree(stored, true, keys.size)
+    }
+
+    fun duplicatePlan(id: String): SchedulePlan? {
+        val plan = plan(id) ?: return null
+        val copy = plan.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${plan.name} Copy",
+            isPrimary = false,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis(),
+        )
+        data = data.copy(plans = data.plans + copy)
+        return copy
+    }
 
     fun createPlan(name: String, termCode: String): SchedulePlan {
         val plan = SchedulePlan(name = name, termCode = termCode, isPrimary = data.plans.none { it.termCode == termCode })

@@ -3,10 +3,17 @@
 
 package app.termorganize.core.model
 
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+
 class CourseEquivalences private constructor(
     val groups: List<List<CourseKey>>,
     private val groupIndex: Map<CourseKey, Int>,
 ) {
+    override fun equals(other: Any?): Boolean = other is CourseEquivalences && groups == other.groups
+    override fun hashCode(): Int = groups.hashCode()
+
+    fun toJson(): String = wire.encodeToString(groupSerializer, groups)
     val isEmpty: Boolean get() = groups.isEmpty()
     val courses: Set<CourseKey> get() = groupIndex.keys
 
@@ -59,6 +66,11 @@ class CourseEquivalences private constructor(
     fun adding(a: CourseKey, b: CourseKey) = merging(fromGroups(listOf(listOf(a, b))))
 
     companion object {
+        private val wire = Json { ignoreUnknownKeys = true }
+        private val groupSerializer = ListSerializer(ListSerializer(CourseKey.serializer()))
+
+        fun fromJson(text: String): CourseEquivalences = fromGroups(wire.decodeFromString(groupSerializer, text))
+
         val none: CourseEquivalences = CourseEquivalences(emptyList(), emptyMap())
 
         operator fun invoke(groups: List<List<CourseKey>> = emptyList()): CourseEquivalences = fromGroups(groups)

@@ -16,6 +16,13 @@ data class DegreeCourseAttributes(
     val loading: Set<CourseKey> = emptySet(),
 ) {
     val isEmpty: Boolean get() = nupaths.isEmpty() && loading.isEmpty()
+
+    /** [preferred] wins when both know a course. A known course is no longer loading. */
+    fun overlay(preferred: DegreeCourseAttributes): DegreeCourseAttributes {
+        val paths = nupaths + preferred.nupaths
+        return DegreeCourseAttributes(paths, (loading + preferred.loading) - paths.keys)
+    }
+
     companion object { val none = DegreeCourseAttributes() }
 }
 
@@ -115,6 +122,8 @@ object DegreeAudit {
     ) {
         val id: String get() = if (instance == 0) key.description else "${key.description} (${instance + 1})"
         val isCompleted: Boolean get() = semester == null
+        val viaEquivalence: Boolean get() = satisfies != null
+        val countsAsLabel: String? get() = satisfies?.let { "counts as ${it.description}" }
     }
 
     data class RuleResult(
@@ -127,6 +136,10 @@ object DegreeAudit {
         val substitutions: List<RequirementSubstitution> = emptyList(),
     ) {
         val id: String get() = rule.id
+
+        /** The course counted toward [required]: itself, or the equivalent that stands in for it. */
+        fun use(required: CourseKey): CourseUse? =
+            used.firstOrNull { it.key == required && it.satisfies == null } ?: used.firstOrNull { it.satisfies == required }
     }
 
     data class GroupResult(val group: RequirementGroup, val rules: List<RuleResult>) {

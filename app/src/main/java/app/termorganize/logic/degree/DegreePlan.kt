@@ -241,6 +241,12 @@ object DegreeCourseRepeats {
         title.lowercase(Locale.US).replace("&", " and ").filter { it.isLetterOrDigit() }
 }
 
+/** Banner's course catalog either doesn't know a course, or knows it (with or without prerequisites). */
+sealed class RequisiteAnswer {
+    data class Known(val requisite: Requisite?) : RequisiteAnswer()
+    data object Unknown : RequisiteAnswer()
+}
+
 object DegreePlanAnalysis {
     sealed class PrerequisiteStatus {
         data object Met : PrerequisiteStatus()
@@ -309,6 +315,43 @@ object DegreePlanAnalysis {
     private fun unique(texts: List<String>): List<String> {
         val seen = HashSet<String>()
         return texts.filter { seen.add(it) }
+    }
+
+    /**
+     * Prerequisites of a planned course. A listed course with details uses the catalog.
+     * Otherwise [lookup] answers [RequisiteAnswer.Known] (including a null requisite) or
+     * [RequisiteAnswer.Unknown]. Declared equivalences always count.
+     */
+    fun prerequisiteStatus(
+        key: CourseKey,
+        termIndex: Int,
+        plan: DegreePlan,
+        catalog: app.termorganize.logic.search.CatalogIndex?,
+        lookup: ((CourseKey) -> RequisiteAnswer)? = null,
+        equivalences: CourseEquivalences = CourseEquivalences.none,
+    ): PrerequisiteStatus {
+        val taken = coursesBefore(termIndex, plan)
+        val counting = equivalences.merging(plan.declaredEquivalences)
+        val listed = catalog?.course(key)
+        if (listed != null && listed.detailsLoaded) return status(listed.prereqs, taken, counting)
+        if (lookup != null) {
+            when (val known = lookup(key)) {
+                is RequisiteAnswer.Known -> return status(known.requisite, taken, counting)
+                RequisiteAnswer.Unknown -> Unit
+            }
+        }
+        return PrerequisiteStatus.Unknown
+    }
+
+    /** Courses a requisite names that were not taken, covered by an equivalent that was. */
+    fun coveringEquivalents(requisite: Requisite, taken: Set<CourseKey>, equivalences: CourseEquivalences): Map<CourseKey, CourseKey> {
+        val covering = LinkedHashMap<CourseKey, CourseKey>()
+        for (key in requisite.referencedCourses) {
+            if (key in taken) continue
+            val equivalent = equivalences.satisfier(key, taken) ?: continue
+            covering[key] = equivalent
+        }
+        return covering
     }
 
     fun duplicateKeys(plan: DegreePlan): Set<CourseKey> {

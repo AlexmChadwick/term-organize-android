@@ -7,6 +7,7 @@ package app.termorganize.core.banner
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.AttributeInfo
 import app.termorganize.core.model.Campus
+import app.termorganize.core.model.CourseInfo
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
 import app.termorganize.core.model.Subject
@@ -24,10 +25,18 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.TimeUnit
 
 class BannerClient(
     private val client: HttpClient = HttpClient(OkHttp) {
         expectSuccess = false
+        engine {
+            config {
+                connectTimeout(8, TimeUnit.SECONDS)
+                readTimeout(20, TimeUnit.SECONDS)
+                callTimeout(25, TimeUnit.SECONDS)
+            }
+        }
     },
 ) {
     private val base = "https://nubanner.neu.edu/StudentRegistrationSsb/ssb/"
@@ -113,6 +122,22 @@ class BannerClient(
         return all
     }
 
+    /**
+     * Live sections for specific courses. One session, reset between courses.
+     * Banner treats the course number as a prefix, so only exact matches are kept.
+     */
+    suspend fun fetchSections(term: String, courses: List<CourseKey>): Map<CourseKey, List<BannerSection>> {
+        if (courses.isEmpty()) return emptyMap()
+        val cookie = openSession(term)
+        val out = LinkedHashMap<CourseKey, List<BannerSection>>()
+        courses.forEachIndexed { index, key ->
+            if (index > 0) resetSearch(cookie)
+            val page = searchSections(term, cookie, key.subject, key.number, pageSize = 500)
+            out[key] = page.filter { it.subject == key.subject && it.courseNumber == key.number }
+        }
+        return out
+    }
+
     /** Which of [courses] have at least one exact section in [term]. One session, reset between courses. */
     suspend fun fetchOfferedCourses(term: String, courses: List<CourseKey>): Set<CourseKey> {
         if (courses.isEmpty()) return emptySet()
@@ -124,6 +149,50 @@ class BannerClient(
             if (page.any { it.subject == key.subject && it.courseNumber == key.number }) offered += key
         }
         return offered
+    }
+
+    /**
+     * Catalog entry for one course in one term: title, credits, requisites, and mutual exclusions.
+     * Null when that term's catalog does not list the course.
+     */
+    suspend fun fetchCourseInfo(
+        course: CourseKey,
+        term: String,
+        subjects: suspend () -> BannerParsers.SubjectLookup,
+    ): CourseInfo? {
+        if (!catalogLists(course, term)) return null
+        val detailsHtml = postCourseForm("courseSearchResults/getCourseCatalogDetails", term, course)
+        val prerequisitesHtml = postCourseForm("courseSearchResults/getPrerequisites", term, course)
+        val corequisitesHtml = postCourseForm("courseSearchResults/getCorequisites", term, course)
+        val exclusionsHtml = postCourseForm("courseSearchResults/getCourseMutuallyExclusions", term, course)
+        val lookup = subjects()
+        val details = BannerParsers.catalogDetails(detailsHtml)
+        return CourseInfo(
+            key = course,
+            title = details.title.orEmpty(),
+            minCredits = details.minCredits,
+            maxCredits = details.maxCredits,
+            prerequisites = BannerParsers.prerequisites(prerequisitesHtml, lookup),
+            corequisites = BannerParsers.corequisites(corequisitesHtml, lookup),
+            equivalents = BannerParsers.mutualExclusions(exclusionsHtml, lookup),
+            sourceTerm = term,
+            fetchedAt = System.currentTimeMillis() / 1000.0,
+        )
+    }
+
+    private suspend fun catalogLists(course: CourseKey, term: String): Boolean {
+        val query = "searchTerm=${course.subject}%20${course.number}&term=$term&offset=1&max=10"
+        val text = client.get(base + "courseSearch/get_subjectcoursecombo?$query").bodyAsText()
+        val items = runCatching { AppJson.catalog.decodeFromString<List<BannerCodeDescription>>(text) }.getOrElse { return false }
+        return BannerParsers.catalogCodes(items, course)
+    }
+
+    private suspend fun postCourseForm(path: String, term: String, course: CourseKey): String {
+        val response = client.post(base + path) {
+            contentType(ContentType.Application.FormUrlEncoded)
+            setBody("courseNumber=${course.number}&subjectCode=${course.subject}&term=$term")
+        }
+        return response.bodyAsText()
     }
 
     private suspend fun searchPage(term: String, cookie: String, offset: Int, pageSize: Int): BannerSectionPage {

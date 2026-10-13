@@ -45,6 +45,11 @@ object ProfessorPage {
         return "https://www.ratemyprofessors.com/search/professors/696?q=$query"
     }
 
+    fun sectionNote(key: CourseKey, sections: List<CourseSection>): String {
+        val numbers = sections.filter { it.courseKey == key }.map { it.sectionNumber }
+        return "${if (numbers.size == 1) "Section" else "Sections"} ${numbers.joinToString(", ")}"
+    }
+
     fun summaryText(sections: List<CourseSection>): String {
         val courses = sections.map { it.courseKey }.toSet().size
         return "Teaches ${count(sections.size, "section")} across ${count(courses, "course")}"

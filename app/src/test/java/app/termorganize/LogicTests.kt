@@ -24,6 +24,7 @@ import app.termorganize.core.model.Requisite
 import app.termorganize.core.model.Subject
 import app.termorganize.core.model.Term
 import app.termorganize.core.model.TermCatalog
+import app.termorganize.core.model.TermMenu
 import app.termorganize.core.model.TimeOfDay
 import app.termorganize.logic.degree.CatalogProgram
 import app.termorganize.logic.degree.CatalogYear
@@ -88,6 +89,29 @@ class LogicTests {
         assertEquals(Term.College.CPS, cps.college)
         assertTrue(cps.isViewOnly)
         assertEquals(Term.Season.FALL, Term("202710", "").season)
+        val remote = listOf(
+            Term("202710", "Fall 2026 Semester"),
+            Term("202630", "Spring 2026 Semester"),
+            Term("202610", "Fall 2025 Semester"),
+            Term("202530", "Spring 2025 Semester"),
+            Term("202510", "Fall 2024 Semester"),
+            Term("202430", "Spring 2024 Semester"),
+            Term("202410", "Fall 2023 Semester"),
+            Term("202330", "Spring 2023 Semester"),
+            Term("202310", "Fall 2022 Semester"),
+            Term("202230", "Spring 2022 Semester"),
+            Term("202210", "Fall 2021 Semester"),
+            Term("202635", "Spring 2026 CPS Quarter"),
+            Term("202615", "Fall 2025 CPS Quarter"),
+            Term("202632", "Spring 2026 Law Semester"),
+        )
+        val menu = TermMenu.listed(remote, listOf("202210"))
+        assertEquals(10, menu.count { it.college == Term.College.NEU && it.code != "202210" })
+        assertEquals(
+            listOf("202710", "202635", "202632", "202630", "202615", "202610", "202530", "202510", "202430", "202410", "202330", "202310", "202230", "202210"),
+            menu.map { it.code },
+        )
+        assertEquals(listOf("201910"), TermMenu.listed(emptyList(), listOf("201910")).map { it.code })
         assertEquals(2026, Term("202710", "").calendarYear)
         assertEquals(2026, Term("202630", "").calendarYear)
     }

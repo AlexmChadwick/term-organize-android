@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import org.junit.Rule
 import org.junit.Test
@@ -28,7 +29,10 @@ class AppUiTest {
                 rule.onAllNodes(hasText("Search the catalog")).fetchSemanticsNodes().isNotEmpty()
         }
         rule.onNodeWithText("Unofficial, not affiliated with Northeastern or Sandbox.", substring = true).assertIsDisplayed()
-        rule.onNodeWithText("Search the catalog").performClick()
+        rule.onNodeWithText("Search the catalog").performScrollTo().performClick()
+        rule.waitUntil(timeoutMillis = 10_000) {
+            rule.onAllNodes(hasText("Course, professor, CRN, or shorthand")).fetchSemanticsNodes().isNotEmpty()
+        }
         rule.onNodeWithTag("search-field").performTextInput("CS 3000")
         rule.waitUntil(timeoutMillis = 10_000) {
             rule.onAllNodes(hasText("CS 3000", substring = true)).fetchSemanticsNodes().size > 1

@@ -3,7 +3,11 @@
 
 package app.termorganize.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -63,24 +67,29 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.termorganize.R
 import app.termorganize.core.model.Course
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
-import app.termorganize.core.model.CourseTitleMatcher
+import app.termorganize.core.model.EquivalenceSuggester
+import app.termorganize.core.model.PrerequisiteListing
 import app.termorganize.core.model.DaySet
 import app.termorganize.core.model.NUPath
 import app.termorganize.core.model.Requisite
 import app.termorganize.core.model.TimeOfDay
+import app.termorganize.logic.degree.CourseNumberLimit
 import app.termorganize.logic.degree.DegreeAudit
+import app.termorganize.logic.degree.DegreePetitionQuestions
 import app.termorganize.logic.degree.DegreePlan
 import app.termorganize.logic.degree.DegreePlanAnalysis
 import app.termorganize.logic.degree.DegreePlanAutofill
@@ -92,16 +101,23 @@ import app.termorganize.logic.degree.SubstitutionChange
 import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.professors.ProfessorPage
 import app.termorganize.logic.rooms.RoomAvailability
+import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerationResult
+import app.termorganize.logic.schedule.ScheduleNotice
+import app.termorganize.logic.schedule.ScheduleNoResultsText
+import app.termorganize.logic.schedule.ScheduleNotices
 import app.termorganize.logic.schedule.SchedulePreferences
 import app.termorganize.logic.schedule.SchedulePreset
+import app.termorganize.logic.search.CourseAppSearch
 import app.termorganize.logic.search.InstructionFilter
 import app.termorganize.logic.search.SearchFilters
 import app.termorganize.logic.watchlist.WatchlistFormat
 import app.termorganize.logic.watchlist.WatchlistStatus
 import app.termorganize.logic.widget.WidgetScheduleData
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
@@ -141,6 +157,7 @@ fun TermOrganizeRoot(
             else -> Tab.Home
         }
         NavigationSuiteScaffold(
+            modifier = Modifier.semantics { testTagsAsResourceId = true },
             navigationSuiteItems = {
                 Tab.entries.forEach { item ->
                     item(
@@ -187,10 +204,13 @@ private fun queryOf(route: String): String {
     return if (route.startsWith("search")) java.net.URLDecoder.decode(q, "UTF-8") else ""
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun HomeScreen(model: AppModel, status: String, loading: Boolean, open: (String) -> Unit) {
     val index by model.index.collectAsState()
     val user by model.user.collectAsState()
+    val terms by model.availableTerms.collectAsState()
+    val sync by model.syncLabel.collectAsState()
     val plan = user.plans.firstOrNull { it.isPrimary && it.selectedCRNs.isNotEmpty() }
     val next = remember(plan, index) {
         val meetings = plan?.selectedCRNs.orEmpty().mapNotNull { index?.section(it) }.flatMap { section ->
@@ -209,11 +229,29 @@ private fun HomeScreen(model: AppModel, status: String, loading: Boolean, open: 
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Term Organize", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.semantics { heading() })
-        Text(index?.term?.name ?: "Fall 2026", style = MaterialTheme.typography.titleMedium)
+        Text(index?.term?.name ?: "Catalog", style = MaterialTheme.typography.titleMedium)
+        if (terms.isNotEmpty()) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                terms.forEach { term ->
+                    FilterChip(
+                        selected = term.code == index?.term?.code,
+                        onClick = { model.openTerm(term) },
+                        label = { Text(if (term.college == app.termorganize.core.model.Term.College.NEU) term.shortName else term.name) },
+                    )
+                }
+            }
+        }
+        if (sync.isNotBlank()) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(sync)
+        }
         Text(stringResource(R.string.disclaimer), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (loading) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(status.ifBlank { "Loading the Fall 2026 catalog…" })
+            Text(status.ifBlank { "Loading the catalog…" })
+        }
+        if (index != null) {
+            TextButton(onClick = { model.refreshOpenTerm() }) { Text("Refresh this term from Banner") }
         }
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -253,6 +291,11 @@ private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Uni
     var filters by remember { mutableStateOf(SearchFilters()) }
     var showFilters by remember { mutableStateOf(false) }
     val response = remember(text, filters, index) { model.search(text, filters) }
+    var indexed by remember { mutableStateOf<List<CourseAppSearch.Hit>>(emptyList()) }
+    LaunchedEffect(text, filters, response?.results?.size, index?.term?.code) {
+        val missed = text.isNotBlank() && filters.isEmpty && response != null && response.results.isEmpty() && response.crnMatch == null
+        indexed = if (!missed) emptyList() else withContext(Dispatchers.IO) { model.courseIndexHits(text) }
+    }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         OutlinedTextField(
             value = text,
@@ -299,7 +342,14 @@ private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Uni
             }
             item { Text("${response.totalCount} courses", style = MaterialTheme.typography.titleSmall) }
             if (response.results.isEmpty()) {
-                item { Text("No courses match. Loosen a filter or try a shorter query.") }
+                item { Text(if (indexed.isEmpty()) "No courses match. Loosen a filter or try a shorter query." else "Nothing in the main search. The on-device index found:") }
+                items(indexed, key = { "index-${it.code}" }) { hit ->
+                    ListItem(
+                        headlineContent = { Text("${hit.code}  ${hit.title}") },
+                        supportingContent = { Text("From the AppSearch index") },
+                        modifier = Modifier.clickable { open("course/${hit.subject}/${hit.number}") },
+                    )
+                }
             }
             items(response.results.take(80), key = { it.id.description }) { result ->
                 ListItem(
@@ -587,16 +637,38 @@ private fun ScheduleScreen(model: AppModel) {
                 FilterChip(selected = item.id == selectedId, onClick = { selectedId = item.id; generated = null }, label = { Text(item.name + if (item.isPrimary) " · primary" else "") })
             }
         }
+        val others = user.plans.filter { term != null && it.termCode != term }.groupBy { it.termCode }
+        if (others.isNotEmpty()) {
+            Text("Other terms", style = MaterialTheme.typography.titleSmall)
+            others.keys.sortedDescending().forEach { code ->
+                val count = others.getValue(code).size
+                val schedules = if (count == 1) "1 schedule" else "$count schedules"
+                TextButton(onClick = { model.openTermCode(code) }) { Text("${model.termLabel(code)} · $schedules") }
+            }
+        }
         if (plan == null) {
             Text("Add the courses you might take, then generate combinations that don’t overlap.")
             return
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!plan.isPrimary) TextButton(onClick = { model.setPrimarySchedule(plan.id) }) { Text("Make primary") }
+            TextButton(onClick = { model.duplicateSchedule(plan.id) }) { Text("Duplicate") }
             TextButton(onClick = { model.deleteSchedule(plan.id); selectedId = null }) { Text("Delete plan") }
         }
+        val resolved = ResolvedPlan(plan, index)
+        ScheduleNotices.make(resolved, index?.term?.name ?: "this term", catalogUnavailable = index == null).forEach { notice ->
+            val color = when (notice.severity) {
+                ScheduleNotice.Severity.ERROR -> MaterialTheme.colorScheme.error
+                ScheduleNotice.Severity.WARNING -> MaterialTheme.colorScheme.tertiary
+                ScheduleNotice.Severity.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Text(notice.title, color = color, fontWeight = FontWeight.Medium)
+            notice.lines.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            notice.fix?.let { fix ->
+                TextButton(onClick = { model.forgetSections(plan.id, fix.removeSections) }) { Text(notice.fixTitle ?: "Remove") }
+            }
+        }
         val selected = plan.selectedCRNs.mapNotNull { index?.section(it) }
-        if (model.conflicts(selected)) Text("Selected sections overlap.", color = MaterialTheme.colorScheme.error)
         WeekCalendar(selected, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) Text("Search for a course and tap Add to schedule.")
@@ -628,7 +700,7 @@ private fun ScheduleScreen(model: AppModel) {
                 FilterChip(selected = preset.isApplied(prefs), onClick = { model.applyPreset(plan.id, preset) }, label = { Text(preset.title) })
             }
         }
-        Text(if (prefs.isDefault) "No extra wishes yet." else "${prefs.activeCount} preference rules active.")
+        Text(if (prefs.isDefault) "No extra wishes yet." else prefs.summary())
         OutlinedTextField(
             sentence,
             { sentence = it },
@@ -650,7 +722,16 @@ private fun ScheduleScreen(model: AppModel) {
         if (result != null) {
             Text("${result.schedules.size} of ${result.totalFound} combinations", style = MaterialTheme.typography.titleMedium)
             if (result.schedules.isEmpty()) {
-                Text("Nothing fit.")
+                val analysis = result.noResults
+                Text(analysis?.let { ScheduleNoResultsText.headline(result.diagnostics, it.blockers) } ?: "Nothing fit.")
+                analysis?.blockers?.options?.forEach { option ->
+                    Text(ScheduleNoResultsText.detail(option, analysis.blockers, index?.term?.name ?: "this term"), style = MaterialTheme.typography.bodySmall)
+                }
+                val moves = analysis?.blockers?.blockingCourses?.let { model.scheduleMoves(it) }.orEmpty()
+                moves.forEach { option ->
+                    TextButton(onClick = { model.applyReorder(option); generated = null }) { Text(option.title) }
+                    if (option.scheduleEffect.isNotEmpty()) Text(option.scheduleEffect, style = MaterialTheme.typography.bodySmall)
+                }
                 result.diagnostics.suggestions.forEach { Text("• $it") }
                 result.diagnostics.courses.filter { it.isBlocked }.forEach { report ->
                     Text("${report.key.description} has no remaining sections. ${report.rejections.entries.joinToString { "${it.value} ${it.key}" }}")
@@ -672,11 +753,14 @@ private fun ScheduleScreen(model: AppModel) {
             }
         }
         Text("Export", style = MaterialTheme.typography.titleMedium)
+        val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            model.report(if (granted) model.insertCalendar(plan) else "Calendar permission is required to add every meeting.")
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { share(context, model.exportIcs(plan), "text/calendar") }) { Text(".ics") }
             OutlinedButton(onClick = {
-                val intent = model.calendarIntent(plan)
-                if (intent != null) context.startActivity(intent)
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
+                if (granted) model.report(model.insertCalendar(plan)) else calendarPermission.launch(Manifest.permission.WRITE_CALENDAR)
             }) { Text("Android Calendar") }
             OutlinedButton(onClick = { share(context, model.shareImage(plan), "image/png") }) { Text("Image") }
             OutlinedButton(onClick = { model.copyCrns(plan) }) { Text("Copy CRNs") }
@@ -762,7 +846,14 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
     var equivA by remember { mutableStateOf("") }
     var equivB by remember { mutableStateOf("") }
     var hints by remember { mutableStateOf<List<String>>(emptyList()) }
+    val offering by model.offering.collectAsState()
     val context = LocalContext.current
+    val courseInfo by model.courseInfo.collectAsState()
+    LaunchedEffect(plan?.id, plan?.updatedAt, index?.term?.code) {
+        val current = plan ?: return@LaunchedEffect
+        model.refreshOffering(current)
+        model.refreshCourseInfo(current)
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Degree plan", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
         Text(stringResource(R.string.disclaimer), style = MaterialTheme.typography.bodySmall)
@@ -785,15 +876,29 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         if (duplicates.isNotEmpty()) Text("Repeated: ${duplicates.joinToString { it.description }}", color = MaterialTheme.colorScheme.error)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             if (!plan.isPrimary) TextButton(onClick = { model.setPrimaryDegree(plan.id) }) { Text("Make primary") }
+            TextButton(onClick = { model.duplicateDegree(plan.id) }) { Text("Duplicate") }
             TextButton(onClick = { share(context, model.exportPlanPdf(plan), "application/pdf") }) { Text("Export PDF") }
             TextButton(onClick = { model.deleteDegree(plan.id) }) { Text("Delete") }
         }
         Text("Completed", style = MaterialTheme.typography.titleMedium)
-        plan.completed.forEach { course -> CourseRow(plan, course, model, index, completed = true) }
+        plan.completed.forEach { course -> CourseRow(plan, course, model, index, courseInfo, completed = true) }
         Text("Planned", style = MaterialTheme.typography.titleMedium)
         plan.terms.forEach { term ->
             Text("${term.shortName} (${term.credits} hours)", fontWeight = FontWeight.SemiBold)
-            term.courses.forEach { course -> CourseRow(plan, course, model, index, termIndex = plan.terms.indexOf(term)) }
+            term.courses.forEach { course ->
+                CourseRow(plan, course, model, index, courseInfo, termIndex = plan.terms.indexOf(term))
+                val line = model.offeringLine(course.key, term.season)
+                if (line != null) Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (offering.checkedTerms.isNotEmpty()) {
+                val moves = model.moveSuggestions(plan, term)
+                moves.forEach { suggestion ->
+                    TextButton(onClick = { model.applyMove(plan.id, suggestion) }) { Text(suggestion.title) }
+                    suggestion.reasons.take(3).forEach { reason ->
+                        Text(reason, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
         }
         Text("Add a course", style = MaterialTheme.typography.titleSmall)
         OutlinedTextField(code, { code = it }, label = { Text("Code, such as CS 3000") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -834,16 +939,23 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         plan.courseEquivalences.forEach { Text("${it.course.description} → ${it.countsAs.description}") }
         OutlinedButton(onClick = {
             val catalog = index ?: return@OutlinedButton
+            val listings = catalog.courses.mapNotNull { course -> course.prereqs?.let { PrerequisiteListing(course.key, it) } }
+            val titles = catalog.courses.associate { it.key to it.title }
             hints = plan.completed.mapNotNull { course ->
-                val key = course.key
-                if (key != null && catalog.course(key) != null) return@mapNotNull null
-                val matches = catalog.courses.mapNotNull { other ->
-                    val score = CourseTitleMatcher.similarity(course.title, other.title) ?: return@mapNotNull null
-                    other.code to score
-                }.sortedByDescending { it.second }.take(3)
-                if (matches.isEmpty()) null else "${course.label.ifBlank { course.title }} looks like ${matches.joinToString { it.first }}"
+                val key = course.key ?: return@mapNotNull null
+                if (catalog.course(key) != null) return@mapNotNull null
+                val planTitle = course.title.trim().ifEmpty { null }
+                val found = EquivalenceSuggester.suggestions(
+                    retired = key,
+                    prerequisites = listings,
+                    isCurrent = { catalog.course(it) != null },
+                    excluding = plan.declaredEquivalences,
+                    title = { candidate -> if (candidate == key) planTitle else titles[candidate] },
+                    titleCandidates = catalog.courses.map { it.key },
+                )
+                if (found.isEmpty()) null else "${course.label.ifBlank { course.title }}: ${found.joinToString { "${it.candidate.description} (${it.evidence})" }}"
             }
-        }) { Text("Find similar titles") }
+        }) { Text("Suggest equivalences") }
         hints.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         Text("Requirements audit", style = MaterialTheme.typography.titleMedium)
         OutlinedTextField(programQuery, { programQuery = it }, label = { Text("Program name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -872,13 +984,14 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
                     )
                 }
             }
-            val attributes = app.termorganize.logic.degree.DegreeCourseAttributes(
+            val fromCatalog = app.termorganize.logic.degree.DegreeCourseAttributes(
                 nupaths = (plan.completed + plan.terms.flatMap { it.courses }).mapNotNull { course ->
                     val key = course.key ?: return@mapNotNull null
                     val paths = index?.course(key)?.nupaths?.toSet() ?: return@mapNotNull null
                     key to paths
                 }.toMap(),
             )
+            val attributes = courseInfo.attributes.overlay(fromCatalog)
             val audit = DegreeAudit.run(plan, requirements, attributes = attributes)
             Text("${audit.satisfiedCount} of ${audit.totalCount} requirements satisfied · ${audit.completedHours} completed hours")
             if (audit.needsConcentration) Text("A concentration is still required.")
@@ -891,6 +1004,18 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
             }
             audit.noteChecks.forEach { note -> Text("${note.status.name.lowercase()} · ${note.detail}") }
             if (audit.unused.isNotEmpty()) Text("Unused: ${audit.unused.joinToString { it.key.description }}")
+            DegreePetitionQuestions.questions(plan, requirements, audit = audit).forEach { question ->
+                Text(question.question, fontWeight = FontWeight.SemiBold)
+                Text(question.explanation, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        model.updateDegree(plan.id) { it.setCourseNumbers(CourseNumberLimit.AnyNumber, question.id) }
+                    }) { Text("Any course number") }
+                    TextButton(onClick = {
+                        model.updateDegree(plan.id) { it.setCourseNumbers(CourseNumberLimit.SameAsRequirement, question.id) }
+                    }) { Text("Same numbers") }
+                }
+            }
             Text("Substitution or waiver", style = MaterialTheme.typography.titleSmall)
             requirements.allRules.take(12).forEach { rule ->
                 TextButton(onClick = {
@@ -907,12 +1032,20 @@ private fun CourseRow(
     course: DegreePlanCourse,
     model: AppModel,
     index: app.termorganize.logic.search.CatalogIndex?,
+    courseInfo: CourseInfoSnapshot,
     completed: Boolean = false,
     termIndex: Int = 0,
 ) {
-    val catalog = course.key?.let { index?.course(it) }
-    val before = if (completed) plan.completedKeys else DegreePlanAnalysis.coursesBefore(termIndex, plan)
-    val status = DegreePlanAnalysis.status(catalog?.prereqs, before, plan.declaredEquivalences)
+    val status = course.key?.let {
+        DegreePlanAnalysis.prerequisiteStatus(
+            it,
+            if (completed) -1 else termIndex,
+            plan,
+            index,
+            courseInfo.lookup(),
+            courseInfo.equivalences,
+        )
+    } ?: DegreePlanAnalysis.PrerequisiteStatus.Met
     Column {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("${course.label.ifBlank { course.key?.description ?: "Course" }}  ${course.title}  (${course.credits})", Modifier.weight(1f))
