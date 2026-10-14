@@ -664,13 +664,14 @@ private fun FilterSheet(
 
 @Composable
 private fun CourseRoute(route: String, model: AppModel, back: () -> Unit) {
+    val index by model.index.collectAsState()
     val parts = route.removePrefix("course/").split("/")
     val key = if (parts.size >= 2) CourseKey(parts[0], parts[1]) else return
-    val course = model.course(key)
+    val course = index?.course(key)
     if (course == null) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             BackTitle("Course", back)
-            EmptyText("That course isn’t in the bundled Fall 2026 catalog.")
+            EmptyText("That course isn’t in this term.")
         }
         return
     }
@@ -679,19 +680,21 @@ private fun CourseRoute(route: String, model: AppModel, back: () -> Unit) {
 
 @Composable
 private fun SectionRoute(route: String, model: AppModel, back: () -> Unit) {
+    val index by model.index.collectAsState()
     val crn = route.removePrefix("section/").substringBefore("/")
-    val section = model.index.collectAsState().value?.section(crn)
+    val section = index?.section(crn)
     if (section == null) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             BackTitle("Section", back)
-            EmptyText("CRN $crn isn’t in the bundled catalog.")
+            EmptyText("CRN $crn isn’t in this term.")
         }
         return
     }
-    val course = model.course(section.courseKey)
+    val course = index?.course(section.courseKey)
     if (course != null) CourseScreen(course, model, back, highlight = crn) else {
         Column(Modifier.padding(16.dp)) {
             BackTitle(section.title, back)
+            EmptyText("That course isn’t in this term.")
         }
     }
 }
@@ -704,6 +707,7 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
     var refreshing by remember { mutableStateOf(false) }
     val shown = live ?: sections
     val older by model.olderNote.collectAsState()
+    LaunchedEffect(course.key) { model.ensureCourseDetails(course.key) }
     DetailPage(course.code, back) {
         Text(course.title, style = MaterialTheme.typography.titleLarge)
         Text(
@@ -1245,7 +1249,10 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { model.fetchPrograms() }) { Text("Load catalog programs") }
         }
-        programs.filter { programQuery.isBlank() || it.title.contains(programQuery, true) }.take(8).forEach { item ->
+        if (programs.isNotEmpty()) {
+            Text("${programs.size} programs. Type a name to narrow the list.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        programs.filter { programQuery.isBlank() || it.title.contains(programQuery, true) || it.path.contains(programQuery, true) }.take(24).forEach { item ->
             ListItem(
                 headlineContent = { Text(item.title) },
                 supportingContent = { Text(item.path) },

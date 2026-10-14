@@ -682,7 +682,52 @@ object ProgramCatalogParser {
         }
     }
 
+    /**
+     * One directory level under [parentPath]. The undergraduate index lists colleges,
+     * and a college page lists departments. Degree titles live on the department page.
+     */
+    fun childDirectories(html: String, parentPath: String): List<String> {
+        val parent = parentPath.removePrefix("/").let { if (it.isEmpty() || it.endsWith("/")) it else "$it/" }
+        if (parent.isEmpty()) return emptyList()
+        val out = LinkedHashSet<String>()
+        for ((href, _) in links(html)) {
+            val path = editionRelativePath(href)
+            if (!path.startsWith(parent) || path == parent || !path.endsWith("/")) continue
+            val rest = path.removePrefix(parent).trim('/')
+            if (rest.isEmpty() || rest.contains('/')) continue
+            if (rest in skippedDirectories) continue
+            out += path
+        }
+        return out.toList()
+    }
+
+    private val skippedDirectories = setOf(
+        "admission", "information-entering-students", "expenses", "academic-policies-procedures",
+        "university-academics", "general-information", "handbook", "course-descriptions", "archive",
+    )
+
     private fun links(html: String): List<Pair<String, String>> =
         Regex("""<a\s[^>]*href="([^"#]+)"[^>]*>([\s\S]*?)</a>""", RegexOption.IGNORE_CASE).findAll(html)
             .map { it.groupValues[1] to it.groupValues[2] }.toList()
+}
+
+/**
+ * The public catalog index does not list degrees. Colleges link to departments,
+ * and department pages link to "Computer Science, BSCS".
+ */
+object ProgramCatalogWalker {
+    fun programs(startUrl: String, fetch: (String) -> String): List<CatalogProgram> =
+        collect(startUrl, fetch, 0).distinctBy { it.path }.sortedBy { it.title.lowercase(Locale.US) }
+
+    private fun collect(url: String, fetch: (String) -> String, depth: Int): List<CatalogProgram> {
+        if (depth > 3) return emptyList()
+        val html = runCatching { fetch(url) }.getOrElse { return emptyList() }
+        val listed = ProgramCatalogParser.programs(html)
+        if (listed.isNotEmpty()) return listed
+        if (depth == 3) return emptyList()
+        val parent = java.net.URI(url).path
+        return ProgramCatalogParser.childDirectories(html, parent).flatMap { child ->
+            collect(CatalogEditions.SITE + child.removePrefix("/"), fetch, depth + 1)
+        }
+    }
 }

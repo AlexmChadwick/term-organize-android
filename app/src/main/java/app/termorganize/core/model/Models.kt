@@ -429,6 +429,9 @@ data class CourseInfo(
     val sourceTerm: String,
     val isRetired: Boolean? = null,
     val fetchedAt: Double = 0.0,
+    val description: String = "",
+    val college: String? = null,
+    val department: String? = null,
 ) {
     init {
         val normalized = equivalents.filter { it != key }.toSet().sorted()

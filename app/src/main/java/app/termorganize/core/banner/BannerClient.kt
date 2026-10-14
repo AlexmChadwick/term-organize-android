@@ -23,8 +23,15 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
 class BannerClient(
@@ -41,11 +48,12 @@ class BannerClient(
 ) {
     private val base = "https://nubanner.neu.edu/StudentRegistrationSsb/ssb/"
 
-    suspend fun fetchTerms(max: Int = 40): List<Term> {
-        val text = client.get(base + "classSearch/getTerms?offset=1&max=$max&searchTerm=").bodyAsText()
-        return AppJson.catalog.decodeFromString<List<BannerTerm>>(text).map {
-            Term(it.code, HTMLText.decodeEntities(it.description))
+    suspend fun fetchTerms(): List<Term> {
+        val terms = BannerTermList.collect { page ->
+            val text = client.get(base + "classSearch/getTerms?offset=$page&max=${BannerTermList.PAGE_SIZE}&searchTerm=").bodyAsText()
+            runCatching { AppJson.catalog.decodeFromString<List<BannerTerm>>(text) }.getOrDefault(emptyList())
         }
+        return terms.map { Term(it.code, HTMLText.decodeEntities(it.description)) }
     }
 
     suspend fun openSession(term: String): String {
@@ -76,7 +84,54 @@ class BannerClient(
         val cookie = openSession(term)
         val banner = searchSections(term, cookie, key.subject, key.number)
         val exact = banner.filter { it.subject == key.subject && it.courseNumber == key.number }
-        return CatalogBuilder.makeSections(exact, previous.associateBy { it.crn })
+        val taught = exact.map { section ->
+            val fmt = runCatching { facultyMeetings(term, section.courseReferenceNumber, cookie) }.getOrDefault(emptyList())
+            section.withFacultyMeetings(fmt)
+        }
+        return CatalogBuilder.makeSections(taught, previous.associateBy { it.crn })
+    }
+
+    /**
+     * Instructors for one section. The search-results row leaves faculty empty;
+     * this is the call the Banner page makes when a row is expanded.
+     */
+    suspend fun facultyMeetings(term: String, crn: String, cookie: String): List<BannerMeetingFaculty> {
+        val text = client.get(base + "searchResults/getFacultyMeetingTimes?term=$term&courseReferenceNumber=$crn") {
+            header(HttpHeaders.Cookie, cookie)
+        }.bodyAsText()
+        return runCatching {
+            AppJson.catalog.decodeFromString(BannerFacultyMeetingTimes.serializer(), text).fmt.orEmpty()
+        }.getOrDefault(emptyList())
+    }
+
+    /** Fills empty faculty lists. Failures keep the section as Banner returned it. */
+    suspend fun attachFaculty(
+        term: String,
+        sections: List<BannerSection>,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
+    ): List<BannerSection> {
+        val need = sections.filter { section ->
+            section.courseReferenceNumber.isNotEmpty() &&
+                section.meetingsFaculty.orEmpty().all { it.faculty.isNullOrEmpty() }
+        }
+        if (need.isEmpty()) return sections
+        val cookie = openSession(term)
+        val updates = ConcurrentHashMap<String, BannerSection>()
+        val gate = Semaphore(6)
+        val done = AtomicInteger(0)
+        val total = need.size
+        coroutineScope {
+            need.map { section ->
+                async {
+                    gate.withPermit {
+                        val fmt = runCatching { facultyMeetings(term, section.courseReferenceNumber, cookie) }.getOrDefault(emptyList())
+                        updates[section.courseReferenceNumber] = section.withFacultyMeetings(fmt)
+                        onProgress(done.incrementAndGet(), total)
+                    }
+                }
+            }.awaitAll()
+        }
+        return sections.map { updates[it.courseReferenceNumber] ?: it }
     }
 
     suspend fun fetchSubjects(term: String): List<Subject> =
@@ -166,6 +221,7 @@ class BannerClient(
         val corequisitesHtml = postCourseForm("courseSearchResults/getCorequisites", term, course)
         val exclusionsHtml = postCourseForm("courseSearchResults/getCourseMutuallyExclusions", term, course)
         val lookup = subjects()
+        val descriptionHtml = postCourseForm("courseSearchResults/getCourseDescription", term, course)
         val details = BannerParsers.catalogDetails(detailsHtml)
         return CourseInfo(
             key = course,
@@ -177,6 +233,9 @@ class BannerClient(
             equivalents = BannerParsers.mutualExclusions(exclusionsHtml, lookup),
             sourceTerm = term,
             fetchedAt = System.currentTimeMillis() / 1000.0,
+            description = BannerParsers.description(descriptionHtml),
+            college = details.college,
+            department = details.department,
         )
     }
 

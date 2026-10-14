@@ -383,6 +383,14 @@ data class BannerMeetingTime(
             return DaySet(raw)
         }
 
+    /** Search results and getFacultyMeetingTimes list the same meeting in different orders. */
+    fun matches(other: BannerMeetingTime?): Boolean {
+        if (other == null) return false
+        return meetingType == other.meetingType && beginTime == other.beginTime && endTime == other.endTime &&
+            monday == other.monday && tuesday == other.tuesday && wednesday == other.wednesday &&
+            thursday == other.thursday && friday == other.friday && saturday == other.saturday && sunday == other.sunday
+    }
+
     fun toMeeting(): Meeting {
         val start = beginTime?.toIntOrNull()?.let { TimeOfDay.minutesFromHHMM(it) }
         val end = endTime?.toIntOrNull()?.let { TimeOfDay.minutesFromHHMM(it) }
@@ -403,8 +411,50 @@ data class BannerMeetingTime(
     }
 }
 
+/**
+ * Banner’s class-search payload leaves `faculty` empty. Names come from
+ * `getFacultyMeetingTimes`, which is not in the same order as the search row.
+ */
+fun BannerSection.withFacultyMeetings(fmt: List<BannerMeetingFaculty>): BannerSection {
+    if (fmt.none { !it.faculty.isNullOrEmpty() }) return this
+    val current = meetingsFaculty
+    if (current.isNullOrEmpty()) return copy(meetingsFaculty = fmt)
+    val used = BooleanArray(fmt.size)
+    val merged = current.map { base ->
+        val match = fmt.indices.firstOrNull { index -> !used[index] && base.meetingTime?.matches(fmt[index].meetingTime) == true }
+        if (match == null) base
+        else {
+            used[match] = true
+            val names = fmt[match].faculty?.takeIf { it.isNotEmpty() } ?: base.faculty
+            base.copy(faculty = names)
+        }
+    }
+    return copy(meetingsFaculty = merged)
+}
+
 @Serializable
 data class BannerFacultyMeetingTimes(val fmt: List<BannerMeetingFaculty>? = null)
+
+/**
+ * `classSearch/getTerms` treats `offset` as a 1-based page index. A single
+ * request with `max=40` is only the newest page and drops School of Law terms.
+ */
+object BannerTermList {
+    const val PAGE_SIZE = 100
+
+    suspend fun collect(pageSize: Int = PAGE_SIZE, load: suspend (page: Int) -> List<BannerTerm>): List<BannerTerm> {
+        val all = LinkedHashMap<String, BannerTerm>()
+        var page = 1
+        while (page <= 30) {
+            val batch = load(page)
+            if (batch.isEmpty()) break
+            for (term in batch) if (term.code.isNotEmpty()) all.putIfAbsent(term.code, term)
+            if (batch.size < pageSize) break
+            page += 1
+        }
+        return all.values.toList()
+    }
+}
 
 object BannerDate {
     fun iso(banner: String): String? {

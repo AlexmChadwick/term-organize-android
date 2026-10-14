@@ -55,6 +55,7 @@ import app.termorganize.logic.degree.PlanSeason
 import app.termorganize.logic.degree.PrerequisiteLookup
 import app.termorganize.logic.degree.RequisiteAnswer
 import app.termorganize.logic.degree.ProgramCatalogParser
+import app.termorganize.logic.degree.ProgramCatalogWalker
 import app.termorganize.logic.degree.ProgramRequirements
 import app.termorganize.logic.degree.RequirementSubstitution
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
@@ -214,9 +215,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private suspend fun downloadTerm(term: Term): TermCatalog {
         _syncLabel.value = "Connecting to Banner…"
         return BannerClient.shared { client ->
-            val sections = client.fetchAllSections(term.code) { fetched, total ->
+            val downloaded = client.fetchAllSections(term.code) { fetched, total ->
                 _syncLabel.value = "Downloading sections $fetched of $total"
             }
+            val sections = runCatching {
+                client.attachFaculty(term.code, downloaded) { done, total ->
+                    _syncLabel.value = "Loading instructors $done of $total"
+                }
+            }.getOrDefault(downloaded)
             val subjects = runCatching { client.fetchSubjects(term.code) }.getOrNull()
             val campuses = runCatching { client.fetchCampuses(term.code) }.getOrNull()
             val attributes = runCatching { client.fetchAttributes(term.code) }.getOrNull()
@@ -243,7 +249,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun refreshTermList() {
         viewModelScope.launch(Dispatchers.IO) {
-            val remote = runCatching { BannerClient.shared { it.fetchTerms(40) } }
+            val remote = runCatching { BannerClient.shared { it.fetchTerms() } }
             val terms = remote.getOrElse { catalogs.loadRemoteTerms() }
             if (remote.isSuccess) catalogs.saveRemoteTerms(terms)
             val open = _index.value?.term
@@ -601,14 +607,24 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun clearError() { _error.value = null }
     fun report(message: String) { _error.value = message }
 
+    private fun readCatalog(url: String): String =
+        java.net.URL(url).openStream().bufferedReader(Charsets.UTF_8).use { it.readText() }
+
     fun fetchPrograms(page: String = "https://catalog.northeastern.edu/undergraduate/") {
         viewModelScope.launch {
             _status.value = "Loading the academic catalog…"
-            val html = runCatching { withContext(Dispatchers.IO) { java.net.URL(page).readText() } }
-            html.onSuccess { text ->
-                _programs.value = ProgramCatalogParser.programs(text)
+            val roots = if (page.contains("/graduate/")) listOf(page) else listOf(page, "https://catalog.northeastern.edu/graduate/")
+            val found = runCatching {
+                withContext(Dispatchers.IO) {
+                    roots.flatMap { start ->
+                        runCatching { ProgramCatalogWalker.programs(start, ::readCatalog) }.getOrDefault(emptyList())
+                    }.distinctBy { it.path }
+                }
+            }
+            found.onSuccess { programs ->
+                _programs.value = programs
                 _status.value = ""
-                if (_programs.value.isEmpty()) _error.value = "The catalog page didn’t list any programs."
+                if (programs.isEmpty()) _error.value = "The catalog page didn’t list any programs."
             }.onFailure { _error.value = it.message ?: "Couldn’t reach the academic catalog"; _status.value = "" }
         }
     }
@@ -773,6 +789,44 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             .putExtra(CalendarContract.Events.DESCRIPTION, "CRN ${section.crn}")
             .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, System.currentTimeMillis())
             .putExtra(CalendarContract.EXTRA_EVENT_END_TIME, System.currentTimeMillis() + ((meeting.duration ?: 60) * 60_000L))
+    }
+
+    fun ensureCourseDetails(key: CourseKey) {
+        val open = _index.value ?: return
+        val course = open.course(key) ?: return
+        if (course.detailsLoaded) return
+        val term = open.term.code
+        viewModelScope.launch {
+            val info = runCatching {
+                withContext(Dispatchers.IO) {
+                    BannerClient.shared { client ->
+                        client.fetchCourseInfo(key, term) {
+                            BannerParsers.SubjectLookup(client.fetchSubjects(term))
+                        }
+                    }
+                }
+            }.getOrNull() ?: return@launch
+            val current = _index.value ?: return@launch
+            if (current.term.code != term) return@launch
+            val existing = current.course(key) ?: return@launch
+            if (existing.detailsLoaded) return@launch
+            val updated = existing.copy(
+                title = info.title.ifBlank { existing.title },
+                description = info.description.ifBlank { existing.description },
+                minCredits = info.minCredits ?: existing.minCredits,
+                maxCredits = info.maxCredits ?: existing.maxCredits,
+                prereqs = info.prerequisites ?: existing.prereqs,
+                coreqs = info.corequisites ?: existing.coreqs,
+                college = info.college ?: existing.college,
+                department = info.department ?: existing.department,
+                detailsLoaded = true,
+            )
+            val next = current.catalog.copy(
+                courses = current.catalog.courses.map { if (it.key == key) updated else it },
+            ).recomputePostreqs()
+            withContext(Dispatchers.IO) { catalogs.save(next) }
+            adopt(next)
+        }
     }
 
     fun refreshCourse(key: CourseKey, onDone: (List<CourseSection>) -> Unit) {

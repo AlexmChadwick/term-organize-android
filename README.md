@@ -42,6 +42,8 @@ Install `app/build/outputs/apk/debug/app-debug.apk`, or open the project in Andr
 ./gradlew :app:assembleRelease
 ```
 
+GitHub Actions (`.github/workflows/ci.yml`) runs those unit tests, lint, and `assembleDebug` on Ubuntu with JDK 17, and uploads the debug APK.
+
 Unit tests load the bundled catalog from `app/src/main/assets/catalog/`. The Android Gradle Plugin stores that gzip as plain JSON in the APK; the app opens either name. Instrumented tests live in `app/src/androidTest` and need a device:
 
 ```bash
