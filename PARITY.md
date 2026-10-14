@@ -1,6 +1,6 @@
 # Term Organize Android parity
 
-This maps the SwiftUI app (git archive of `AlexmChadwick/Northeastern-Term-Organize` HEAD, the spec in `uploads/`) onto the Kotlin app in `app/`. Status is **ported**, **partial**, or **not ported**.
+This maps the SwiftUI app at [AlexmChadwick/Northeastern-Term-Organize](https://github.com/AlexmChadwick/Northeastern-Term-Organize) onto the Kotlin app in `app/`. Status is **ported**, **partial**, or **not ported**.
 
 The Apple targets share one logic layer and two SwiftUI shells. Android has one adaptive Compose UI. Mac windowing, menus, and keyboard shortcuts are the tablet rail and the same screens.
 
