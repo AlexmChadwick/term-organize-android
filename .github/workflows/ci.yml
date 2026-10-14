@@ -16,9 +16,11 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install SDK 36
-        run: sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
+        run: yes | sdkmanager --licenses >/dev/null; sdkmanager --install "platforms;android-36" "build-tools;36.0.0"
 
       - name: Unit tests, lint, and debug APK
         run: ./gradlew :app:testDebugUnitTest :app:lint :app:assembleDebug --stacktrace
