@@ -118,6 +118,7 @@ import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.SubstitutionChange
 import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.professors.ProfessorPage
+import app.termorganize.logic.rooms.LegalText
 import app.termorganize.logic.rooms.RoomAvailability
 import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleFilters
@@ -1615,9 +1616,34 @@ private fun SettingsScreen(model: AppModel, onImportJson: () -> Unit) {
             "Term Organize is free software under the GNU Affero General Public License, version 3 only. Portions of the Banner client, catalog builder, requisites, schedule generator, and watchlist rules are derived from SearchNEU. Course data is published by Northeastern University and is not covered by that license. This app is unofficial and is not affiliated with Northeastern University or Sandbox.",
             style = MaterialTheme.typography.bodyMedium,
         )
+        Text("Source code", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "This Android app is a modified version of Term Organize. Under AGPL-3.0 section 13, the corresponding source is offered at ${LegalText.SOURCE_CODE_URL}. SearchNEU, by Sandbox, is at ${LegalText.SEARCHNEU_URL}.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        TextButton(
+            onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(LegalText.SOURCE_CODE_URL))) },
+            modifier = Modifier.heightIn(min = 48.dp),
+        ) { Text("View source code") }
         if (license.isNotBlank()) {
             Text("GNU AGPL-3.0-only", style = MaterialTheme.typography.titleSmall)
             Text(license.take(1800) + if (license.length > 1800) "…" else "", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text("Open source licenses", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "These libraries keep their own licenses. They are not part of the AGPL grant.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        LegalText.OSS_NOTICES.forEach { notice ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(notice.name, style = MaterialTheme.typography.titleSmall)
+                Text(notice.holder, style = MaterialTheme.typography.bodyMedium)
+                TextButton(
+                    onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(notice.url))) },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) { Text(notice.license) }
+            }
         }
         Text("Version 1.0", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

@@ -217,7 +217,18 @@ object SettingsFormat {
 
 object LegalText {
     const val LICENSE_URL = "https://www.gnu.org/licenses/agpl-3.0.html"
+    const val SOURCE_CODE_URL = "https://github.com/AlexmChadwick/Northeastern-Term-Organize"
+    const val SEARCHNEU_URL = "https://github.com/sandboxnu/searchneu"
     const val PLATFORM_NAME = "Android"
     val SEARCH_NEU_SUMMARY =
         "This app is an independent $PLATFORM_NAME adaptation of SearchNEU, the course search built by Sandbox at Northeastern University (sandboxnu). Portions of this app — including the Banner scraping logic, requisite parsing and schedule generation — are derived from SearchNEU's source code."
+
+    data class OssNotice(val name: String, val holder: String, val license: String, val url: String)
+
+    val OSS_NOTICES = listOf(
+        OssNotice("AndroidX (Compose, Activity, Lifecycle, Navigation, Room, WorkManager, Glance, DataStore, AppSearch, Core)", "The Android Open Source Project", "Apache License 2.0", "https://www.apache.org/licenses/LICENSE-2.0"),
+        OssNotice("Kotlin, kotlinx.coroutines, and kotlinx.serialization", "JetBrains s.r.o. and the Kotlin project", "Apache License 2.0", "https://www.apache.org/licenses/LICENSE-2.0"),
+        OssNotice("Ktor", "JetBrains s.r.o.", "Apache License 2.0", "https://www.apache.org/licenses/LICENSE-2.0"),
+        OssNotice("OkHttp", "Square, Inc.", "Apache License 2.0", "https://www.apache.org/licenses/LICENSE-2.0"),
+    )
 }

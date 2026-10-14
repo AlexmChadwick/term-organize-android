@@ -21,22 +21,10 @@ android {
         vectorDrawables.useSupportLibrary = true
     }
 
-    signingConfigs {
-        create("local") {
-            storeFile = file("termorganize-debug.jks")
-            storePassword = "termorganize"
-            keyAlias = "termorganize"
-            keyPassword = "termorganize"
-        }
-    }
-
     buildTypes {
-        debug {
-            signingConfig = signingConfigs.getByName("local")
-        }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("local")
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

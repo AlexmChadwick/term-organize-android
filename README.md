@@ -34,7 +34,7 @@ echo "sdk.dir=$HOME/android-sdk" > local.properties
 ./gradlew :app:assembleDebug
 ```
 
-Install `app/build/outputs/apk/debug/app-debug.apk`, or open the project in Android Studio and run the `app` configuration. Debug and release are signed with the local keystore `app/termorganize-debug.jks` (alias and passwords `termorganize`). That key is only for local builds.
+Install `app/build/outputs/apk/debug/app-debug.apk`, or open the project in Android Studio and run the `app` configuration. Debug and local release builds use the Android debug keystore on the machine. No signing keys are stored in this repository.
 
 ```bash
 ./gradlew :app:testDebugUnitTest   # JUnit + Robolectric

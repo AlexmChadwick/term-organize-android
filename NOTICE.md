@@ -126,9 +126,24 @@ Android-only changes:
 - Persistence is a Room JSON document plus export and import. CloudKit is not used.
 - Home-screen widgets use Glance. Background seat checks use WorkManager.
 
-The Android app links to AndroidX (Compose, Room, WorkManager, Glance, Navigation), Ktor
-Client with the OkHttp engine, and kotlinx.serialization. Those libraries keep their own
-licenses (Apache-2.0). They are not part of the AGPL grant and are not derived from SearchNEU.
+The Android app links to AndroidX (Compose, Room, WorkManager, Glance, Navigation, DataStore,
+and AppSearch), Ktor Client with the OkHttp engine, kotlinx.serialization, and
+kotlinx.coroutines. Those libraries keep their own licenses (Apache-2.0). They are not part of
+the AGPL grant and are not derived from SearchNEU. Settings shows each notice under **Open
+source licenses**, with a link to the Apache License 2.0.
+
+| Component | Copyright | License |
+| --- | --- | --- |
+| AndroidX (Compose, Activity, Lifecycle, Navigation, Room, WorkManager, Glance, DataStore, AppSearch, Core) | The Android Open Source Project | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| Kotlin, kotlinx.coroutines, kotlinx.serialization | JetBrains s.r.o. and the Kotlin project | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| Ktor | JetBrains s.r.o. | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+| OkHttp | Square, Inc. | [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0) |
+
+Settings also offers the corresponding source, as AGPL-3.0 section 13 requires, at
+<https://github.com/AlexmChadwick/Northeastern-Term-Organize> (`LegalText.SOURCE_CODE_URL`).
+SearchNEU’s source is credited there as well:
+<https://github.com/sandboxnu/searchneu>.
+
 Northeastern course and catalog text remains © Northeastern University and is not covered by
 the AGPL grant. The app is unofficial and is not affiliated with Northeastern University or
 Sandbox.
