@@ -28,6 +28,7 @@ class AppUiTest {
             rule.onAllNodes(hasText("—")).fetchSemanticsNodes().isEmpty() &&
                 rule.onAllNodes(hasText("Search the catalog")).fetchSemanticsNodes().isNotEmpty()
         }
+        rule.onAllNodes(hasText("Spring 2027"))[0].assertIsDisplayed()
         rule.onNodeWithText("Unofficial, not affiliated with Northeastern or Sandbox.", substring = true).assertIsDisplayed()
         rule.onNodeWithText("Search the catalog").performScrollTo().performClick()
         rule.waitUntil(timeoutMillis = 10_000) {

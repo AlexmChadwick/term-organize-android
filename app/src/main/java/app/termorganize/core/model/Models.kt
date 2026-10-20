@@ -5,7 +5,14 @@
 
 package app.termorganize.core.model
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.descriptors.nullable
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import java.util.Locale
 import kotlin.math.abs
 
@@ -288,6 +295,7 @@ data class Meeting(
 data class Instructor(
     val name: String,
     val primary: Boolean = false,
+    @Serializable(with = WorkEmailSerializer::class)
     val email: String? = null,
 ) {
     val displayName: String get() = displayName(name)
@@ -298,6 +306,34 @@ data class Instructor(
             if (parts.size != 2 || parts[1].isEmpty()) return raw.trim()
             return "${parts[1]} ${parts[0]}"
         }
+
+        /** Keeps an address only when its domain is exactly northeastern.edu or neu.edu. */
+        fun workEmail(raw: String?): String? {
+            if (raw.isNullOrBlank()) return null
+            return raw.split(Regex("[\\s,;]+")).firstOrNull { token ->
+                val at = token.lastIndexOf('@')
+                if (at <= 0 || at == token.lastIndex) return@firstOrNull false
+                val domain = token.substring(at + 1).lowercase(Locale.US)
+                domain == "northeastern.edu" || domain == "neu.edu"
+            }
+        }
+    }
+}
+
+/** Omitted and JSON null stay null. Any other domain is dropped instead of stored. */
+object WorkEmailSerializer : KSerializer<String?> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("WorkEmail", PrimitiveKind.STRING).nullable
+
+    override fun serialize(encoder: Encoder, value: String?) {
+        if (value == null) encoder.encodeNull() else encoder.encodeString(value)
+    }
+
+    override fun deserialize(decoder: Decoder): String? {
+        if (!decoder.decodeNotNullMark()) {
+            decoder.decodeNull()
+            return null
+        }
+        return Instructor.workEmail(decoder.decodeString())
     }
 }
 

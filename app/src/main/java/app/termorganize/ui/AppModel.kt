@@ -110,9 +110,10 @@ import java.io.File
 import java.util.zip.GZIPInputStream
 
 class AppModel(app: Application) : AndroidViewModel(app) {
+    private val bundledCache = HashMap<String, TermCatalog>()
     private val dao = AppDatabase.create(app).userDao()
     private val catalogs = CatalogStore(File(app.filesDir, "catalogs")) { code ->
-        if (code == "202710") loadBundled() else null
+        bundledCatalog(code)
     }
     private val offeringDirectory = File(app.filesDir, "course-info")
     private val _index = MutableStateFlow<CatalogIndex?>(null)
@@ -153,7 +154,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             try {
                 val stored = withContext(Dispatchers.IO) { dao.get()?.let { UserJson.decode(it.json) } }
                 if (stored != null) _user.value = stored
-                val catalog = withContext(Dispatchers.IO) { catalogs.load("202710") ?: loadBundled() }
+                val catalog = withContext(Dispatchers.IO) {
+                    catalogs.defaultTermCode()?.let { catalogs.load(it) }
+                }
+                if (catalog == null) error("No bundled catalog")
                 adopt(catalog)
                 refreshTermList()
             } catch (error: Throwable) {
@@ -253,7 +257,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             val terms = remote.getOrElse { catalogs.loadRemoteTerms() }
             if (remote.isSuccess) catalogs.saveRemoteTerms(terms)
             val open = _index.value?.term
-            val shown = TermMenu.listed(terms, catalogs.localCodes())
+            val codes = catalogs.localCodes()
+            val listed = TermMenu.listed(terms, codes)
+            val known = listed.mapNotNull { term ->
+                if (term.bannerDescription != "Term ${term.code}") null
+                else catalogs.load(term.code)?.term
+            }
+            val shown = TermMenu.preferKnownNames(listed, known)
             val withOpen = if (open != null && shown.none { it.code == open.code }) listOf(open) + shown else shown
             _availableTerms.value = withOpen.ifEmpty { listOfNotNull(open) }
             _otherTerms.value = terms.sortedByDescending { it.code }
@@ -346,16 +356,29 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun courseIndexHits(query: String): List<CourseAppSearch.Hit> = CourseAppSearch.search(getApplication(), query)
 
-    private fun loadBundled(): TermCatalog {
+    private fun bundledCatalog(code: String): TermCatalog? = synchronized(bundledCache) {
+        bundledCache[code]?.let { return@synchronized it }
+        if (code !in CatalogStore.bundledTermCodes) return@synchronized null
+        val loaded = runCatching { readBundled(code) }.getOrNull() ?: return@synchronized null
+        bundledCache[code] = loaded
+        loaded
+    }
+
+    private fun readBundled(code: String): TermCatalog {
         val assets = getApplication<Application>().assets
-        val bytes = listOf("catalog/term-202710.json.gz", "catalog/term-202710.json").firstNotNullOf { name ->
+        val bytes = listOf("catalog/term-$code.json.gz", "catalog/term-$code.json").firstNotNullOfOrNull { name ->
             runCatching { assets.open(name).use { it.readBytes() } }.getOrNull()
-        }
+        } ?: error("No bundled catalog for $code")
         val text = if (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()) {
             GZIPInputStream(bytes.inputStream()).use { it.readBytes() }.decodeToString()
-        } else bytes.decodeToString()
+        } else {
+            bytes.decodeToString()
+        }
         return AppJson.catalog.decodeFromString(TermCatalog.serializer(), text)
     }
+
+    private fun currentTermCode(): String =
+        _index.value?.term?.code ?: catalogs.defaultTermCode() ?: CatalogStore.bundledTermCodes.max()
 
     fun update(block: (UserData) -> UserData) {
         val next = block(_user.value)
@@ -372,7 +395,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun sections(key: CourseKey): List<CourseSection> = _index.value?.sections(key).orEmpty()
 
     fun ensurePlan(): SchedulePlan {
-        val term = _index.value?.term?.code ?: "202710"
+        val term = currentTermCode()
         val existing = _user.value.plans.firstOrNull { it.termCode == term && it.isPrimary }
             ?: _user.value.plans.firstOrNull { it.termCode == term }
         if (existing != null) return existing
@@ -433,7 +456,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun createSchedule(name: String) {
-        val term = _index.value?.term?.code ?: "202710"
+        val term = currentTermCode()
         val plan = SchedulePlan(
             name = name.ifBlank { PlanEditing.nextPlanName(_user.value.plans.map { it.name }) },
             termCode = term,
@@ -673,7 +696,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
                         client.close()
                     }
                 }
-            }.getOrElse { it.message ?: "Banner is unreachable. The bundled catalog is Fall 2026." }
+            }.getOrElse { it.message ?: "Banner is unreachable. Bundled catalogs stay on the device." }
             _olderNote.value = note
         }
     }

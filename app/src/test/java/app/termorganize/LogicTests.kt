@@ -72,6 +72,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -509,16 +510,74 @@ class LogicTests {
         assertTrue(ProfessorPage.rateMyProfessorsUrl("Jane Doe").contains("q=Jane%20Doe"))
     }
 
+    @Test fun instructorEmailMayBeOmitted() {
+        val json = """
+            {"crn":"1","subject":"CS","number":"3000","instructors":[
+              {"name":"Doe, Jane","primary":true},
+              {"name":"Doe, John","email":"j.doe@northeastern.edu","primary":false},
+              {"name":"Roe, Pat","email":null}
+            ]}
+        """.trimIndent()
+        val section = AppJson.catalog.decodeFromString(CourseSection.serializer(), json)
+        val people = section.instructors!!
+        assertNull(people[0].email)
+        assertEquals("j.doe@northeastern.edu", people[1].email)
+        assertNull(people[2].email)
+        val mixed = """
+            {"crn":"2","subject":"CS","number":"3000","instructors":[
+              {"name":"Doe, Ada","email":"ada@gmail.com a.doe@northeastern.edu"},
+              {"name":"Doe, Bea","email":"bea@gmail.com"},
+              {"name":"Doe, Cy","email":"c.doe@coe.neu.edu"},
+              {"name":"Doe, Dee","email":"d.doe@neu.edu"}
+            ]}
+        """.trimIndent()
+        val kept = AppJson.catalog.decodeFromString(CourseSection.serializer(), mixed).instructors!!
+        assertEquals("a.doe@northeastern.edu", kept[0].email)
+        assertNull(kept[1].email)
+        assertNull(kept[2].email)
+        assertEquals("d.doe@neu.edu", kept[3].email)
+    }
+
+    @Test fun spring2027CatalogLoadsWithOmittedEmails() {
+        val file = bundledCatalogFile("202730")
+        val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
+        assertEquals(
+            "1eceba7fb35edda0060f1f64f6efd7526d112cf5738d05e4a1da24a4b65fde05",
+            digest.joinToString("") { "%02x".format(it) },
+        )
+        val catalog = bundledCatalog("202730")
+        assertEquals("202730", catalog.term.code)
+        assertEquals("Spring 2027", catalog.term.name)
+        assertTrue(catalog.term.isViewOnly)
+        assertEquals(3076, catalog.courses.size)
+        assertEquals(8326, catalog.sections.size)
+        val people = catalog.sections.flatMap { it.instructors.orEmpty() }
+        assertTrue(people.any { it.email == null })
+        val domains = people.mapNotNull { instructor ->
+            instructor.email?.substringAfter('@', "")?.lowercase()
+        }.toSet()
+        assertTrue(domains.isNotEmpty())
+        assertTrue(domains.all { it == "northeastern.edu" || it == "neu.edu" })
+        assertTrue(people.none { it.email?.contains(' ') == true })
+        assertEquals("Algorithms and Data", catalog.courses.first { it.subject == "CS" && it.number == "3000" }.title)
+    }
+
     companion object {
         private var index: CatalogIndex? = null
+
+        fun bundledCatalogFile(code: String): File = listOf(
+            File("src/main/assets/catalog/term-$code.json.gz"),
+            File("app/src/main/assets/catalog/term-$code.json.gz"),
+        ).first { it.exists() }
+
+        fun bundledCatalog(code: String): TermCatalog {
+            val text = GZIPInputStream(bundledCatalogFile(code).inputStream()).use { it.readBytes() }.decodeToString()
+            return AppJson.catalog.decodeFromString(TermCatalog.serializer(), text)
+        }
+
         fun bundledIndex(): CatalogIndex {
             index?.let { return it }
-            val file = listOf(
-                File("src/main/assets/catalog/term-202710.json.gz"),
-                File("app/src/main/assets/catalog/term-202710.json.gz"),
-            ).first { it.exists() }
-            val text = GZIPInputStream(file.inputStream()).use { it.readBytes() }.decodeToString()
-            val built = CatalogIndex.build(AppJson.catalog.decodeFromString(TermCatalog.serializer(), text))
+            val built = CatalogIndex.build(bundledCatalog("202710"))
             index = built
             return built
         }
