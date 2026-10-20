@@ -6,6 +6,10 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+fun signingValue(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "app.termorganize"
     compileSdk = 36
@@ -15,16 +19,37 @@ android {
         applicationId = "app.termorganize"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
+    }
+
+    val keystorePath = signingValue("ANDROID_KEYSTORE_PATH")
+    val keystorePassword = signingValue("ANDROID_KEYSTORE_PASSWORD")
+    val keyAliasName = signingValue("ANDROID_KEY_ALIAS")
+    val keyPassword = signingValue("ANDROID_KEY_PASSWORD")
+
+    signingConfigs {
+        create("release") {
+            if (keystorePath != null && keystorePassword != null && keyAliasName != null && keyPassword != null) {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                keyAlias = keyAliasName
+                this.keyPassword = keyPassword
+                storeType = "PKCS12"
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (signingConfigs.getByName("release").storeFile != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

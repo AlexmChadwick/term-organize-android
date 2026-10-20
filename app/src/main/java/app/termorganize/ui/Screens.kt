@@ -1652,6 +1652,6 @@ private fun SettingsScreen(model: AppModel, onImportJson: () -> Unit) {
                 ) { Text(notice.license) }
             }
         }
-        Text("Version 1.0", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Version ${app.termorganize.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
