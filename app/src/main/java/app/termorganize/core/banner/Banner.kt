@@ -346,7 +346,7 @@ data class BannerFaculty(
 ) {
     fun toInstructor(): Instructor? {
         val name = displayName?.let { HTMLText.decodeEntities(HTMLText.decodeEntities(it)) }.nilIfBlank() ?: return null
-        return Instructor(name, primaryIndicator ?: false, Instructor.workEmail(emailAddress))
+        return Instructor(name, primaryIndicator ?: false, emailAddress.nilIfBlank())
     }
 }
 

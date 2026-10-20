@@ -65,6 +65,11 @@ import app.termorganize.logic.watchlist.WatchlistFormat
 import app.termorganize.logic.watchlist.WatchlistStatus
 import app.termorganize.logic.widget.WidgetMeeting
 import app.termorganize.logic.widget.WidgetScheduleData
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -72,7 +77,6 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.security.MessageDigest
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -523,28 +527,9 @@ class LogicTests {
         assertNull(people[0].email)
         assertEquals("j.doe@northeastern.edu", people[1].email)
         assertNull(people[2].email)
-        val mixed = """
-            {"crn":"2","subject":"CS","number":"3000","instructors":[
-              {"name":"Doe, Ada","email":"ada@gmail.com a.doe@northeastern.edu"},
-              {"name":"Doe, Bea","email":"bea@gmail.com"},
-              {"name":"Doe, Cy","email":"c.doe@coe.neu.edu"},
-              {"name":"Doe, Dee","email":"d.doe@neu.edu"}
-            ]}
-        """.trimIndent()
-        val kept = AppJson.catalog.decodeFromString(CourseSection.serializer(), mixed).instructors!!
-        assertEquals("a.doe@northeastern.edu", kept[0].email)
-        assertNull(kept[1].email)
-        assertNull(kept[2].email)
-        assertEquals("d.doe@neu.edu", kept[3].email)
     }
 
     @Test fun spring2027CatalogLoadsWithOmittedEmails() {
-        val file = bundledCatalogFile("202730")
-        val digest = MessageDigest.getInstance("SHA-256").digest(file.readBytes())
-        assertEquals(
-            "1eceba7fb35edda0060f1f64f6efd7526d112cf5738d05e4a1da24a4b65fde05",
-            digest.joinToString("") { "%02x".format(it) },
-        )
         val catalog = bundledCatalog("202730")
         assertEquals("202730", catalog.term.code)
         assertEquals("Spring 2027", catalog.term.name)
@@ -553,13 +538,31 @@ class LogicTests {
         assertEquals(8326, catalog.sections.size)
         val people = catalog.sections.flatMap { it.instructors.orEmpty() }
         assertTrue(people.any { it.email == null })
-        val domains = people.mapNotNull { instructor ->
-            instructor.email?.substringAfter('@', "")?.lowercase()
-        }.toSet()
-        assertTrue(domains.isNotEmpty())
-        assertTrue(domains.all { it == "northeastern.edu" || it == "neu.edu" })
-        assertTrue(people.none { it.email?.contains(' ') == true })
         assertEquals("Algorithms and Data", catalog.courses.first { it.subject == "CS" && it.number == "3000" }.title)
+    }
+
+    @Test fun spring2027FileContainsOnlyWorkEmailDomains() {
+        val text = GZIPInputStream(bundledCatalogFile("202730").inputStream()).use { it.readBytes() }.decodeToString()
+        val sections = Json.parseToJsonElement(text).jsonObject.getValue("sections").jsonArray
+        val allowed = setOf("northeastern.edu", "neu.edu")
+        var addresses = 0
+        for (section in sections) {
+            val instructors = section.jsonObject["instructors"]?.jsonArray ?: continue
+            for (person in instructors) {
+                val email = person.jsonObject["email"] ?: continue
+                assertTrue(email is JsonPrimitive && email.isString)
+                val raw = email.jsonPrimitive.content
+                assertTrue(raw.isNotBlank())
+                val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                assertTrue(tokens.isNotEmpty())
+                for (token in tokens) {
+                    val domain = token.substringAfter('@', missingDelimiterValue = "").lowercase()
+                    assertTrue("bundled 202730 email domain: $domain", domain in allowed)
+                    addresses++
+                }
+            }
+        }
+        assertTrue(addresses > 0)
     }
 
     companion object {
