@@ -24,7 +24,7 @@ sealed class PrerequisiteLookup {
  * add a semester. Pure function of the plan.
  */
 object DegreePlanReordering {
-    data class Move(val course: CourseKey, val from: String, val to: String)
+    data class Move(val course: CourseKey, val from: String, val to: String, val crn: String? = null)
 
     data class Suggestion(
         val id: String,
@@ -66,11 +66,18 @@ object DegreePlanReordering {
             maxCreditsPerTerm,
         )
         val candidates = ArrayList<Candidate>()
-        val seen = HashSet<CourseKey>()
+        val seen = HashSet<String>()
         for ((order, key) in blocking.withIndex()) {
-            if (!seen.add(key)) continue
-            val course = sorted.terms[origin].courses.firstOrNull { it.key == key } ?: continue
-            candidates += engine.candidates(course, order, blocking.toSet())
+            val matches = sorted.terms[origin].courses.filter { it.key == key }
+            val rows = if (
+                matches.size > 1 &&
+                matches.all { it.manualCRN != null } &&
+                matches.map { it.manualCRN }.distinct().size == matches.size
+            ) matches else matches.take(1)
+            for (course in rows) {
+                if (!seen.add(course.id)) continue
+                candidates += engine.candidates(course, order, blocking.toSet())
+            }
         }
         candidates.sortBy { it.rank }
         return candidates.take(MAX_SUGGESTIONS).map { it.suggestion }
@@ -87,18 +94,20 @@ object DegreePlanReordering {
             else updated = updated.copy(terms = updated.terms + semester).sorted()
         }
         for (move in suggestion.moves) {
-            updated = performMove(move.course, move.from, semesterId[move.to] ?: move.to, updated) ?: return plan
+            updated = performMove(move.course, move.from, semesterId[move.to] ?: move.to, updated, move.crn) ?: return plan
         }
         return updated
     }
 
-    private fun performMove(course: CourseKey, from: String, to: String, plan: DegreePlan): DegreePlan? {
+    private fun performMove(course: CourseKey, from: String, to: String, plan: DegreePlan, crn: String? = null): DegreePlan? {
         val terms = plan.terms.toMutableList()
         val source = terms.indexOfFirst { it.id == from }
         val target = terms.indexOfFirst { it.id == to }
         if (source < 0 || target < 0) return null
         val sourceCourses = terms[source].courses.toMutableList()
-        val position = sourceCourses.indexOfFirst { it.key == course }
+        val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
+        val position = if (manual == null) sourceCourses.indexOfFirst { it.key == course }
+        else sourceCourses.indexOfFirst { it.key == course && it.manualCRN == manual }
         if (position < 0) return null
         val moved = sourceCourses.removeAt(position)
         terms[source] = terms[source].copy(courses = sourceCourses)
@@ -203,6 +212,16 @@ object DegreePlanReordering {
         private fun creditsLabel(credits: Double): String =
             "${CreditFormatter.number(credits)} ${if (credits == 1.0) "credit" else "credits"}"
 
+        private fun courseLabel(course: DegreePlanCourse, key: CourseKey): String {
+            val pin = course.manualCRN ?: return key.description
+            return "${key.description} (CRN $pin)"
+        }
+
+        private fun pinSuffix(crn: String?): String {
+            val pin = crn?.trim()?.takeIf { it.isNotEmpty() } ?: return ""
+            return "-$pin"
+        }
+
         /** 1 when the history can't say; null when it says the course isn't taught then. */
         private fun uncertainty(key: CourseKey, season: PlanSeason): Int? = when (history.isLikelyOffered(key, season)) {
             false -> null
@@ -246,19 +265,20 @@ object DegreePlanReordering {
             val offering = uncertainty(key, semester.season) ?: return null
             val total = semester.credits + course.credits
             if (total > maxCredits) return null
-            val move = Move(key, plan.terms[origin].id, semester.id)
-            val changed = performMove(key, move.from, move.to, plan) ?: return null
+            val move = Move(key, plan.terms[origin].id, semester.id, course.crn)
+            val changed = performMove(key, move.from, move.to, plan, move.crn) ?: return null
             val after = checksAfter(changed, setOf(course.id)) ?: return null
             val check = after[course.id] ?: Check.UNKNOWN
+            val label = courseLabel(course, key)
             val reasons = listOf(
                 offeringReason(key, semester.season, named = false),
                 prerequisiteReason(key, check, before[course.id] == Check.MET, named = false),
                 "${semester.shortName} would have ${creditsLabel(total)}",
             )
             val suggestion = Suggestion(
-                "move-${key.description}-${move.to}",
+                "move-${key.description}${pinSuffix(course.crn)}-${move.to}",
                 listOf(move),
-                "Move ${key.description} to ${semester.shortName}",
+                "Move $label to ${semester.shortName}",
                 reasons,
             )
             return Candidate(suggestion, Rank(1, target, offering + if (check == Check.UNKNOWN) 1 else 0, order, 0))
@@ -281,11 +301,11 @@ object DegreePlanReordering {
             val newTarget = semester.credits - partner.credits + course.credits
             if (newHome > maxOf(maxCredits, home.credits) || newTarget > maxOf(maxCredits, semester.credits)) return null
             val moves = listOf(
-                Move(key, home.id, semester.id),
-                Move(partnerKey, semester.id, home.id),
+                Move(key, home.id, semester.id, course.crn),
+                Move(partnerKey, semester.id, home.id, partner.crn),
             )
             var changed = plan
-            for (move in moves) changed = performMove(move.course, move.from, move.to, changed) ?: return null
+            for (move in moves) changed = performMove(move.course, move.from, move.to, changed, move.crn) ?: return null
             val after = checksAfter(changed, setOf(course.id, partner.id)) ?: return null
             val courseCheck = after[course.id] ?: Check.UNKNOWN
             val partnerCheck = after[partner.id] ?: Check.UNKNOWN
@@ -298,9 +318,9 @@ object DegreePlanReordering {
                 "${semester.shortName} would have ${creditsLabel(newTarget)}",
             )
             val suggestion = Suggestion(
-                "swap-${key.description}-${semester.id}-${partnerKey.description}",
+                "swap-${key.description}${pinSuffix(course.crn)}-${semester.id}-${partnerKey.description}${pinSuffix(partner.crn)}",
                 moves,
-                "Move ${key.description} to ${semester.shortName} and ${partnerKey.description} to ${home.shortName}",
+                "Move ${courseLabel(course, key)} to ${semester.shortName} and ${courseLabel(partner, partnerKey)} to ${home.shortName}",
                 reasons,
             )
             val unsure = courseOffering + partnerOffering +
@@ -321,8 +341,8 @@ object DegreePlanReordering {
                     year = upcoming.year,
                 )
                 var changed = plan.copy(terms = plan.terms + semester).sorted()
-                val move = Move(key, home.id, semester.id)
-                changed = performMove(key, move.from, move.to, changed) ?: continue
+                val move = Move(key, home.id, semester.id, course.crn)
+                changed = performMove(key, move.from, move.to, changed, move.crn) ?: continue
                 val after = checksAfter(changed, setOf(course.id)) ?: continue
                 val check = after[course.id] ?: Check.UNKNOWN
                 val reasons = listOf(
@@ -331,9 +351,9 @@ object DegreePlanReordering {
                     "Adds ${semester.shortName} to your plan, with ${creditsLabel(course.credits)}",
                 )
                 val suggestion = Suggestion(
-                    "move-${key.description}-${semester.id}",
+                    "move-${key.description}${pinSuffix(course.crn)}-${semester.id}",
                     listOf(move),
-                    "Move ${key.description} to a new ${semester.shortName} semester",
+                    "Move ${courseLabel(course, key)} to a new ${semester.shortName} semester",
                     reasons,
                     addsSemester = semester,
                 )

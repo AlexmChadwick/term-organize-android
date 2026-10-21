@@ -30,8 +30,11 @@ data class PlanCourse(
     val isRequired: Boolean = true,
     val excludedCRNs: Set<String> = emptySet(),
     val colorIndex: Int = 0,
+    /** Manually chosen section. Identity is this CRN in the plan's term, not the course number. */
+    val crn: String? = null,
 ) {
     val id: CourseKey get() = key
+    val manualCRN: String? get() = crn?.trim()?.takeIf { it.isNotEmpty() }
 }
 
 @Serializable
@@ -49,6 +52,20 @@ data class SchedulePlan(
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     fun contains(key: CourseKey) = courses.any { it.key == key }
+
+    /**
+     * A second entry with the same subject and number is allowed only when every entry for that
+     * number already has a manual CRN and [crn] is a different one. The same CRN cannot be added twice.
+     */
+    fun admitsCourse(key: CourseKey, crn: String?): Boolean {
+        val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
+        if (manual != null && courses.any { it.manualCRN == manual }) return false
+        val same = courses.filter { it.key == key }
+        if (same.isEmpty()) return true
+        if (manual == null) return false
+        if (same.any { it.manualCRN == null }) return false
+        return true
+    }
     val nextColorIndex: Int
         get() {
             val used = courses.map { it.colorIndex }.toSet()
@@ -170,10 +187,20 @@ data class DegreePlanCourse(
     val label: String = "",
     val title: String = "",
     val credits: Double = 0.0,
+    /** Manually chosen section. Two entries may share a course number only when both CRNs are set and different. */
+    val crn: String? = null,
 ) {
+    val manualCRN: String? get() = crn?.trim()?.takeIf { it.isNotEmpty() }
+
     companion object {
-        fun of(key: CourseKey?, title: String, credits: Double, label: String? = null, id: String = UUID.randomUUID().toString()) =
-            DegreePlanCourse(id, key, label ?: key?.description ?: "", title, credits)
+        fun of(
+            key: CourseKey?,
+            title: String,
+            credits: Double,
+            label: String? = null,
+            id: String = UUID.randomUUID().toString(),
+            crn: String? = null,
+        ) = DegreePlanCourse(id, key, label ?: key?.description ?: "", title, credits, crn)
     }
 }
 
@@ -306,6 +333,22 @@ data class DegreePlan(
 ) {
     val completedCredits: Double get() = completed.sumOf { it.credits }
     val plannedCredits: Double get() = terms.sumOf { it.credits }
+    private val everyCourse: List<DegreePlanCourse> get() = completed + terms.flatMap { it.courses }
+
+    /**
+     * Same subject and number twice is allowed only when every matching entry, including this one,
+     * has its own manual CRN. The same CRN is never added twice. Entries with no CRN keep the
+     * previous behavior: they can repeat, and the audit decides whether the repeat counts.
+     */
+    fun admits(course: DegreePlanCourse): Boolean {
+        val crn = course.manualCRN
+        if (crn != null && everyCourse.any { it.manualCRN == crn }) return false
+        val key = course.key ?: return true
+        val same = everyCourse.filter { it.key == key }
+        if (crn != null && same.any { it.manualCRN == null }) return false
+        if (crn == null && same.any { it.manualCRN != null }) return false
+        return true
+    }
     val completedKeys: Set<CourseKey> get() = completed.mapNotNull { it.key }.toSet()
     fun sorted(): DegreePlan = copy(terms = terms.sortedBy { it.sortKey })
     fun termMatching(term: Term): DegreePlanTerm? = terms.firstOrNull { it.matches(term) }
@@ -451,25 +494,37 @@ class UserDataStore(var data: UserData = UserData()) {
 
     fun plan(id: String) = plans.firstOrNull { it.id == id }
 
-    fun addCourse(key: CourseKey, planId: String, required: Boolean = true): Boolean {
+    fun addCourse(key: CourseKey, planId: String, required: Boolean = true, crn: String? = null): Boolean {
         var added = false
         updatePlan(planId) { plan ->
-            if (plan.contains(key)) plan
+            if (!plan.admitsCourse(key, crn)) plan
             else {
                 added = true
-                plan.copy(courses = plan.courses + PlanCourse(key, isRequired = required, colorIndex = plan.nextColorIndex))
+                val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
+                plan.copy(
+                    courses = plan.courses + PlanCourse(key, isRequired = required, colorIndex = plan.nextColorIndex, crn = manual),
+                    selectedCRNs = if (manual == null || manual in plan.selectedCRNs) plan.selectedCRNs else plan.selectedCRNs + manual,
+                )
             }
         }
         return added
     }
 
-    fun removeCourse(key: CourseKey, planId: String, sectionsOfCourse: List<String> = emptyList()) {
+    fun removeCourse(key: CourseKey, planId: String, sectionsOfCourse: List<String> = emptyList(), crn: String? = null) {
         val drop = sectionsOfCourse.toSet()
+        val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
         updatePlan(planId) { plan ->
+            val courses = if (manual == null) plan.courses.filter { it.key != key }
+            else plan.courses.filter { !(it.key == key && it.manualCRN == manual) }
+            val protected = courses.mapNotNull { it.manualCRN }.toSet()
             plan.copy(
-                courses = plan.courses.filter { it.key != key },
-                selectedCRNs = if (drop.isEmpty()) plan.selectedCRNs else plan.selectedCRNs.filter { it !in drop },
-                favoriteCombinations = if (drop.isEmpty()) plan.favoriteCombinations else plan.favoriteCombinations.filter { combo -> combo.none { it in drop } },
+                courses = courses,
+                selectedCRNs = plan.selectedCRNs.filter { selected ->
+                    if (selected in protected) true
+                    else if (manual != null && selected == manual) false
+                    else drop.isEmpty() || selected !in drop
+                },
+                favoriteCombinations = if (drop.isEmpty()) plan.favoriteCombinations else plan.favoriteCombinations.filter { combo -> combo.none { it in drop && it !in protected } },
             )
         }
     }

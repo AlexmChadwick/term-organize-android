@@ -119,6 +119,7 @@ object DegreeAudit {
         val bySubstitution: Boolean = false,
         val satisfies: CourseKey? = null,
         val instance: Int = 0,
+        val crn: String? = null,
     ) {
         val id: String get() = if (instance == 0) key.description else "${key.description} (${instance + 1})"
         val isCompleted: Boolean get() = semester == null

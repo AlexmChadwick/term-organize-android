@@ -105,9 +105,9 @@ internal class AuditEngine(
                 order++
                 return
             }
-            var use = DegreeAudit.CourseUse(key, course.title, course.credits, semester, order)
+            var use = DegreeAudit.CourseUse(key, course.title, course.credits, semester, order, crn = course.crn)
             val earlier = instances[key].orEmpty().mapNotNull { pool[it] }
-            val repeated = earlier.firstOrNull { !DegreeCourseRepeats.countsSeparately(use.title, use.credits, it.title, it.credits) }
+            val repeated = earlier.firstOrNull { !DegreeCourseRepeats.countsSeparately(use, it) }
             if (repeated != null) {
                 val better = if (repeated.isCompleted == use.isCompleted) use.credits > repeated.credits else use.isCompleted
                 if (better) pool[repeated.id] = use.copy(instance = repeated.instance)

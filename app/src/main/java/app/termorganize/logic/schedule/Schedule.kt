@@ -453,6 +453,8 @@ data class ScheduleCourseInput(
     val excludedCRNs: Set<String> = emptySet(),
     val minCredits: Int = 0,
     val maxCredits: Int = 0,
+    /** The only section is a section the user already chose. Filters must not replace it. */
+    val locked: Boolean = false,
 ) {
     companion object
 }

@@ -234,8 +234,19 @@ object DegreeCourseRepeats {
         return "topic" in first || "topic" in second
     }
 
-    fun countsSeparately(a: DegreePlanCourse, b: DegreePlanCourse) =
-        countsSeparately(a.title, a.credits, b.title, b.credits)
+    fun countsSeparately(a: DegreePlanCourse, b: DegreePlanCourse): Boolean {
+        val left = a.manualCRN
+        val right = b.manualCRN
+        if (left != null && right != null) return left != right
+        return countsSeparately(a.title, a.credits, b.title, b.credits)
+    }
+
+    fun countsSeparately(a: DegreeAudit.CourseUse, b: DegreeAudit.CourseUse): Boolean {
+        val left = a.crn?.trim()?.takeIf { it.isNotEmpty() }
+        val right = b.crn?.trim()?.takeIf { it.isNotEmpty() }
+        if (left != null && right != null) return left != right
+        return countsSeparately(a.title, a.credits, b.title, b.credits)
+    }
 
     private fun normalizedTitle(title: String): String =
         title.lowercase(Locale.US).replace("&", " and ").filter { it.isLetterOrDigit() }

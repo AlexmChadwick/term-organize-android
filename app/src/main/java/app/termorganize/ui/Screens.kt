@@ -873,12 +873,18 @@ private fun ScheduleScreen(model: AppModel) {
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
         plan.courses.forEach { course ->
             val title = index?.course(course.key)?.title.orEmpty()
+            val sectionTitle = index?.section(course.crn ?: "")?.title?.takeIf { course.crn != null && it.isNotBlank() }
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(course.key.description, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    if (title.isNotBlank()) Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        if (course.crn != null) "${course.key.description} · CRN ${course.crn}" else course.key.description,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    val detail = sectionTitle ?: title
+                    if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                TextButton(onClick = { model.removeCourse(plan.id, course.key) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = { model.removeCourse(plan.id, course.key, course.crn) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             }
         }
         Text("Autofill", style = MaterialTheme.typography.titleMedium)

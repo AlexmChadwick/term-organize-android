@@ -119,6 +119,10 @@ internal object ScheduleEngine {
             val remaining = ArrayList<CourseSection>()
             val rejections = LinkedHashMap<ScheduleFilterReason, Int>()
             for (section in course.sections) {
+                if (course.locked) {
+                    remaining += section
+                    continue
+                }
                 val reasons = ScheduleGenerator.rejectionReasons(section, filters, preferences, course.excludedCRNs)
                 if (reasons.isEmpty()) remaining += section
                 else reasons.forEach { rejections[it] = (rejections[it] ?: 0) + 1 }
