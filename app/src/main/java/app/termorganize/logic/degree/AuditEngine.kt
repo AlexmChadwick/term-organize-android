@@ -957,7 +957,7 @@ internal class AuditEngine(
         for (use in pool.values) if (use.id !in counted && courseInRange(use.key, ranges) != null) counted[use.id] = use
         val completed = counted.values.filter { it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val planned = counted.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
-        val (status, detail) = hoursStatus(completed, planned, required)
+        val (status, detail) = DegreeAudit.hoursStatus(completed, planned, required)
         return DegreeAudit.NoteCheck(sectionID, note, DegreeAudit.NoteCheck.Kind.MajorHours(required), status, detail)
     }
 
@@ -1065,7 +1065,7 @@ internal class AuditEngine(
         val planned = pool.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val items = mutableListOf<DegreeAudit.NoteItem>()
         minimums.totalHours?.let { total ->
-            val (status, detail) = hoursStatus(completed, planned, total)
+            val (status, detail) = DegreeAudit.hoursStatus(completed, planned, total)
             items += DegreeAudit.NoteItem("total-hours", "${formatHours(total)} total semester hours", status, detail)
         }
         if (minimums.requiresExperientialLearning) {
@@ -1102,7 +1102,7 @@ internal class AuditEngine(
     private fun totalHoursCheck(sectionID: String, note: String, required: Double): DegreeAudit.NoteCheck {
         val completed = pool.values.filter { it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val planned = pool.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
-        val (status, detail) = hoursStatus(completed, planned, required)
+        val (status, detail) = DegreeAudit.hoursStatus(completed, planned, required)
         return DegreeAudit.NoteCheck(sectionID, note, DegreeAudit.NoteCheck.Kind.TotalHours(required), status, detail)
     }
 
@@ -1134,18 +1134,6 @@ internal class AuditEngine(
         private fun totalHours(note: String) =
             Regex("""(?i)(\d+(?:\.\d+)?)\s+total\s+semester\s+hours\s+required""")
                 .find(note)?.groupValues?.get(1)?.toDoubleOrNull()
-
-        private fun hoursStatus(completed: Double, planned: Double, required: Double): Pair<DegreeAudit.Status, String> {
-            val status = when {
-                completed >= required -> DegreeAudit.Status.COMPLETE
-                completed + planned >= required -> DegreeAudit.Status.PLANNED
-                completed + planned > 0 -> DegreeAudit.Status.PARTIAL
-                else -> DegreeAudit.Status.MISSING
-            }
-            var detail = "${formatHours(completed + planned)} of ${formatHours(required)} semester hours"
-            if (planned > 0) detail += " · ${formatHours(planned)} planned"
-            return status to detail
-        }
 
         private fun describe(uses: List<DegreeAudit.CourseUse>) = uses.joinToString(" · ") { use ->
             if (use.isCompleted) "${use.key.description} completed" else "${use.key.description} planned${use.semester?.let { " · $it" } ?: ""}"

@@ -428,14 +428,25 @@ fun ScheduleCourseInput.Companion.inputs(plan: SchedulePlan, index: CatalogIndex
             crn
         }.distinct()
         if (pins.isEmpty()) {
-            result += ScheduleCourseInput(
-                planCourse.key,
-                planCourse.isRequired,
-                index.sections(planCourse.key),
-                planCourse.excludedCRNs,
-                min,
-                max,
-            )
+            val missing = plan.selectedCRNs.filter { crn ->
+                crn !in claimed && index.section(crn) == null && plan.courses.none { it.manualCRN == crn }
+            }
+            val open = plan.courses.filter { course ->
+                course.manualCRN == null && plan.selectedCRNs.none { crn -> index.section(crn)?.courseKey == course.key }
+            }
+            if (missing.isNotEmpty() && open.size == 1 && open[0].key == planCourse.key) {
+                claimed += missing.first()
+                result += lockedInput(planCourse.copy(crn = missing.first()), null, min, max)
+            } else {
+                result += ScheduleCourseInput(
+                    planCourse.key,
+                    planCourse.isRequired,
+                    index.sections(planCourse.key),
+                    planCourse.excludedCRNs,
+                    min,
+                    max,
+                )
+            }
         } else {
             pins.forEachIndexed { offset, crn ->
                 claimed += crn
@@ -459,6 +470,7 @@ private fun lockedInput(planCourse: PlanCourse, section: CourseSection?, min: In
     minCredits = min,
     maxCredits = max,
     locked = true,
+    unavailableCRN = if (section == null) planCourse.manualCRN else null,
 )
 
 fun GeneratedSchedule.Companion.favorites(plan: SchedulePlan, index: CatalogIndex, preferences: SchedulePreferences): List<GeneratedSchedule> {
@@ -633,7 +645,13 @@ object ScheduleNoResultsText {
         val result = ArrayList<Reason>()
         for (report in diagnostics.courses) {
             if (!report.isBlocked || !report.isRequired) continue
-            if (report.totalSections == 0) {
+            if (report.unavailableCRN != null) {
+                result += Reason(
+                    "questionmark.folder",
+                    "CRN ${report.unavailableCRN} is unavailable",
+                    "That section is no longer in the $termName catalog, so another section of ${report.key.description} is not used.",
+                )
+            } else if (report.totalSections == 0) {
                 result += Reason("questionmark.folder", "${report.key.description} isn’t offered in $termName", "Remove it from the schedule or make it optional.")
             } else {
                 result += Reason("xmark.circle", "No ${report.key.description} sections left", rejectionText(report, diagnostics))

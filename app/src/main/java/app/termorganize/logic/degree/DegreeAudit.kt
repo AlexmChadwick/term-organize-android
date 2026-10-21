@@ -250,4 +250,27 @@ object DegreeAudit {
         equivalences: CourseEquivalences = CourseEquivalences.none,
         attributes: DegreeCourseAttributes = DegreeCourseAttributes.none,
     ): Result = AuditEngine(plan, requirements, equivalences.merging(plan.declaredEquivalences), attributes).run()
+
+    /**
+     * How a semester-hour minimum stands, for the university minimum, the program total, and
+     * hours in the major.
+     *
+     * The line is `"$completed of $required semester hours"`, then `" · $planned planned"` when
+     * [planned] is above zero. The first number is [completed] alone.
+     *
+     * [Status.COMPLETE] when completed credits already meet [required]. [Status.PLANNED] when they
+     * fall short but completed plus planned meets it. [Status.PARTIAL] when that sum is still
+     * short and above zero. [Status.MISSING] when both are zero.
+     */
+    fun hoursStatus(completed: Double, planned: Double, required: Double): Pair<Status, String> {
+        val status = when {
+            completed >= required -> Status.COMPLETE
+            completed + planned >= required -> Status.PLANNED
+            completed + planned > 0 -> Status.PARTIAL
+            else -> Status.MISSING
+        }
+        var detail = "${formatHours(completed)} of ${formatHours(required)} semester hours"
+        if (planned > 0) detail += " · ${formatHours(planned)} planned"
+        return status to detail
+    }
 }

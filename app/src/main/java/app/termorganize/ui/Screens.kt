@@ -112,6 +112,7 @@ import app.termorganize.logic.degree.DegreePlan
 import app.termorganize.logic.degree.DegreePlanAnalysis
 import app.termorganize.logic.degree.DegreePlanAutofill
 import app.termorganize.logic.degree.DegreePlanCourse
+import app.termorganize.logic.degree.DegreeRequirementText
 import app.termorganize.logic.degree.PlanSeason
 import app.termorganize.logic.degree.RequirementSubstitution
 import app.termorganize.logic.degree.SchedulePlan
@@ -1289,7 +1290,7 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
             )
             val attributes = courseInfo.attributes.overlay(fromCatalog)
             val audit = DegreeAudit.run(plan, requirements, attributes = attributes)
-            Text("${audit.satisfiedCount} of ${audit.totalCount} requirements satisfied · ${audit.completedHours} completed hours")
+            Text("${audit.satisfiedCount} of ${audit.totalCount} requirements satisfied · ${DegreeRequirementText.creditsLine(audit)}")
             if (audit.needsConcentration) Text("A concentration is still required.")
             audit.sections.forEach { section ->
                 Text(section.section.title, fontWeight = FontWeight.SemiBold)

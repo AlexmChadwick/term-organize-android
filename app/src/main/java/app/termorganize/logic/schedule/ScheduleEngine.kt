@@ -129,7 +129,7 @@ internal object ScheduleEngine {
             }
             kept += remaining
             reports += ScheduleDiagnostics.CourseReport(
-                course.key, course.isRequired, course.sections.size, remaining.size, rejections,
+                course.key, course.isRequired, course.sections.size, remaining.size, rejections, course.unavailableCRN,
             )
         }
         var diagnostics = ScheduleDiagnostics(courses = reports, filters = filters, preferences = preferences)

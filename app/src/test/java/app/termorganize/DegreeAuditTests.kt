@@ -20,6 +20,7 @@ import app.termorganize.logic.degree.DegreeCourseAttributes
 import app.termorganize.logic.degree.DegreePetitionQuestions
 import app.termorganize.logic.degree.DegreePlan
 import app.termorganize.logic.degree.DegreePlanAnalysis
+import app.termorganize.logic.degree.DegreeRequirementText
 import app.termorganize.logic.degree.DegreePlanCourse
 import app.termorganize.logic.degree.DegreePlanTerm
 import app.termorganize.logic.degree.NUpathMatching
@@ -531,7 +532,10 @@ class DegreeAuditTests {
         assertEquals("COOP 3946 completed", coop.detail)
         assertEquals(done.totalCount, done.satisfiedCount)
         val short = audit(listOf("CS 3000", "CS 3200", "CS 1210"), listOf("CS 3500"))
-        assertEquals(DegreeAudit.Status.PARTIAL, short.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.MajorHours }.status)
+        val shortHours = short.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.MajorHours }
+        // 4 (CS 3000) + 4 (CS 3200) earned, 4 (CS 3500) planned. Not 12 of 16 with the 4 planned again.
+        assertEquals(DegreeAudit.Status.PARTIAL, shortHours.status)
+        assertEquals("8 of 16 semester hours · 4 planned", shortHours.detail)
         assertEquals("No co-op in the plan", short.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.Coop }.detail)
         assertTrue(short.satisfiedCount < short.totalCount)
     }
@@ -848,13 +852,13 @@ class DegreeNUpathTests {
         val check = audit.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.Universitywide }
         assertEquals(listOf("total-hours", "gpa", "residency"), check.items.map { it.id })
         assertEquals(DegreeAudit.Status.PARTIAL, check.items[0].status)
-        assertEquals("44 of 128 semester hours · 12 planned", check.items[0].detail)
+        assertEquals("32 of 128 semester hours · 12 planned", check.items[0].detail)
         assertNull(check.items[1].status)
         assertEquals("Not checked: plans don’t include grades", check.items[1].detail)
         assertNull(check.items[2].status)
         assertEquals(DegreeAudit.Status.PARTIAL, check.status)
         assertTrue(check.counts)
-        assertEquals("44 of 128 semester hours · 12 planned · GPA and residency not checked", check.detail)
+        assertEquals("32 of 128 semester hours · 12 planned · GPA and residency not checked", check.detail)
         val unread = DegreeAudit.run(plan(), requirements(), attributes = attributes())
         assertFalse(unread.noteChecks.any { it.kind is DegreeAudit.NoteCheck.Kind.Universitywide })
     }
@@ -863,7 +867,81 @@ class DegreeNUpathTests {
         val audit = DegreeAudit.run(plan(), requirements())
         val check = audit.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.TotalHours }
         assertEquals(DegreeAudit.Status.PARTIAL, check.status)
-        assertEquals("44 of 134 semester hours · 12 planned", check.detail)
+        assertEquals("32 of 134 semester hours · 12 planned", check.detail)
+    }
+
+    @Test fun hoursLinesKeepCompletedSeparateFromPlanned() {
+        assertEquals(DegreeAudit.Status.PLANNED to "105 of 128 semester hours · 30 planned", DegreeAudit.hoursStatus(105.0, 30.0, 128.0))
+        assertEquals(DegreeAudit.Status.PLANNED to "105 of 134 semester hours · 30 planned", DegreeAudit.hoursStatus(105.0, 30.0, 134.0))
+        assertEquals(DegreeAudit.Status.PLANNED to "60 of 72 semester hours · 22 planned", DegreeAudit.hoursStatus(60.0, 22.0, 72.0))
+        assertEquals(DegreeAudit.Status.COMPLETE to "128 of 128 semester hours", DegreeAudit.hoursStatus(128.0, 0.0, 128.0))
+        assertEquals(DegreeAudit.Status.COMPLETE to "140 of 128 semester hours · 10 planned", DegreeAudit.hoursStatus(140.0, 10.0, 128.0))
+        assertEquals(DegreeAudit.Status.PARTIAL to "90 of 128 semester hours · 20 planned", DegreeAudit.hoursStatus(90.0, 20.0, 128.0))
+        assertEquals(DegreeAudit.Status.MISSING to "0 of 128 semester hours", DegreeAudit.hoursStatus(0.0, 0.0, 128.0))
+        assertEquals(DegreeAudit.Status.PLANNED to "0 of 128 semester hours · 128 planned", DegreeAudit.hoursStatus(0.0, 128.0, 128.0))
+
+        val page = """
+            <div id="programrequirementstextcontainer" class="tab_content">
+            <h2>Universitywide Requirements</h2>
+            <p>All undergraduate students are required to complete the Universitywide Requirements.</p>
+            <h2>Major Requirements</h2>
+            <table class="sc_courselist"><tbody>
+            <tr class="even firstrow"><td class="codecol"><a class="bubblelink code">CS&#160;3000</a></td><td>Algorithms</td><td class="hourscol">4</td></tr>
+            <tr class="odd"><td colspan="2"><span class="courselistcomment">Complete 8 semester hours of CS classes. Choose courses within the following ranges:</span></td><td class="hourscol">8</td></tr>
+            <tr class="even lastrow"><td colspan="2"><div style="margin-left:20px;" class="blockindent"><span class="courselistcomment commentindent"><a class="bubblelink code">CS&#160;2500</a> or higher</span></div></td><td class="hourscol"></td></tr>
+            </tbody></table>
+            <h2>Writing Requirement</h2>
+            <table class="sc_courselist"><tbody>
+            <tr class="even firstrow lastrow"><td class="codecol"><a class="bubblelink code">ENGW&#160;1111</a></td><td>First-Year Writing</td><td class="hourscol">4</td></tr>
+            </tbody></table>
+            <h2>Required General Electives</h2>
+            <table class="sc_courselist"><tbody>
+            <tr class="even lastrow firstrow"><td colspan="2"><span class="courselistcomment">Complete 4 semester hours of general electives.</span></td><td class="hourscol">4</td></tr>
+            </tbody></table>
+            <h2>Credit Requirement</h2>
+            <p>Complete 72 semester hours in the major.</p>
+            <h2>Program Requirement</h2>
+            <p>134 total semester hours required</p>
+            </div>
+        """.trimIndent()
+        val requirements = ProgramCatalogParser.requirements(page, CatalogYear(2024), program)!!.copy(
+            universitywide = UniversitywideRequirements(totalHours = 128.0, gpa = 2.0, residencyHours = 64.0),
+        )
+        val plan = DegreePlan(
+            name = "BS CS",
+            completed = listOf(
+                DegreeAuditTests.course("CS 3000", 40.0),
+                DegreeAuditTests.course("CS 2500", 20.0),
+                DegreeAuditTests.course("ENGW 1111", 4.0),
+                DegreeAuditTests.course("PHIL 1102", 41.0),
+            ),
+            terms = listOf(
+                DegreePlanTerm(
+                    season = PlanSeason.SPRING,
+                    year = 2027,
+                    courses = listOf(DegreeAuditTests.course("CS 3500", 22.0), DegreeAuditTests.course("MKTG 2201", 8.0)),
+                ),
+            ),
+        )
+        val audit = DegreeAudit.run(plan, requirements)
+        assertEquals(105.0, audit.completedHours, 0.0)
+        assertEquals(30.0, audit.plannedHours, 0.0)
+        assertEquals(134.0, audit.requiredHours!!, 0.0)
+        assertEquals("105 of 134 credits done · 30 planned", DegreeRequirementText.creditsLine(audit))
+
+        val university = audit.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.Universitywide }
+        assertEquals(DegreeAudit.Status.PLANNED, university.status)
+        assertEquals(DegreeAudit.Status.PLANNED, university.items[0].status)
+        assertEquals("105 of 128 semester hours · 30 planned", university.items[0].detail)
+        assertEquals("105 of 128 semester hours · 30 planned · GPA and residency not checked", university.detail)
+
+        val total = audit.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.TotalHours }
+        assertEquals(DegreeAudit.Status.PLANNED, total.status)
+        assertEquals("105 of 134 semester hours · 30 planned", total.detail)
+
+        val major = audit.noteChecks.first { it.kind is DegreeAudit.NoteCheck.Kind.MajorHours }
+        assertEquals(DegreeAudit.Status.PLANNED, major.status)
+        assertEquals("60 of 72 semester hours · 22 planned", major.detail)
     }
 
     private fun nupath(audit: DegreeAudit.Result) = audit.noteChecks.firstOrNull { it.kind is DegreeAudit.NoteCheck.Kind.Nupath }

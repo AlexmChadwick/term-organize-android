@@ -36,6 +36,7 @@ import app.termorganize.logic.schedule.PlanEditing
 import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleCourseInput
 import app.termorganize.logic.schedule.ScheduleFilters
+import app.termorganize.logic.schedule.ScheduleNoResultsText
 import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.SchedulePlanActions
 import app.termorganize.logic.schedule.inputs
@@ -372,6 +373,27 @@ class CrnPinTests {
         val found = schedulesOf(schedule, refreshed)
         assertTrue(found.isNotEmpty())
         assertTrue(found.all { pin in it && better !in it })
+    }
+
+    @Test fun aPinnedCrnMissingFromTheCatalogStaysLocked() {
+        val pin = "11111"
+        val other = "22222"
+        val catalog = index(
+            listOf(course("CS", "3000")),
+            listOf(section(other, "CS", "3000", listOf(1), 10.0, 11.5, seats = 40)),
+        )
+        val schedule = pinnedPlan(listOf("CS 3000" to pin))
+        val inputs = ScheduleCourseInput.inputs(schedule, catalog)
+        assertEquals(1, inputs.size)
+        assertTrue(inputs[0].locked)
+        assertTrue(inputs[0].sections.isEmpty())
+        assertEquals(pin, inputs[0].unavailableCRN)
+        val result = ScheduleGenerator.generate(inputs, ScheduleFilters())
+        assertTrue(result.schedules.isEmpty())
+        assertTrue(result.schedules.none { other in it.crns })
+        val reasons = ScheduleNoResultsText.reasons(result.diagnostics, "Fall 2026")
+        assertEquals(listOf("CRN $pin is unavailable"), reasons.map { it.title })
+        assertTrue(result.diagnostics.suggestions.contains("CRN $pin is unavailable"))
     }
 
     @Test fun aSavedPlanWithoutACrnStillLoads() {
