@@ -1168,6 +1168,14 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
             "${plan.completedCredits} completed · ${plan.plannedCredits} planned · ${plan.completedCredits + plan.plannedCredits} total hours",
             style = MaterialTheme.typography.bodyLarge,
         )
+        val duplicateCount = DegreePlanAnalysis.duplicateKeys(plan).size
+        if (duplicateCount > 0) {
+            Text(
+                DegreePlanAnalysis.duplicateHeader(duplicateCount),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         ChipFlow {
             if (!plan.isPrimary) TextButton(onClick = { model.setPrimaryDegree(plan.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Make primary") }
             TextButton(onClick = { model.duplicateDegree(plan.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Duplicate") }
@@ -1199,6 +1207,14 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(credits, { credits = it }, label = { Text("Hours") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         val parsedKey = CourseKey.parse(code)
+        val alreadyThere = parsedKey?.let { DegreePlanAnalysis.addingAgainNotice(plan, it) }
+        if (alreadyThere != null) {
+            Text(
+                alreadyThere,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         ChipFlow {
             Button(onClick = {
                 val course = DegreePlanCourse.of(parsedKey, title.ifBlank { parsedKey?.description ?: code }, credits.toDoubleOrNull() ?: 0.0, code)
@@ -1326,18 +1342,18 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
 }
 
 @Composable
-internal fun DegreeDuplicateWarning(description: String) {
-    Text(
-        DegreePlanAnalysis.duplicateWarning(description),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.bodyMedium,
-    )
-}
-
-@Composable
 internal fun DegreeDuplicateRows(plan: DegreePlan) {
-    val duplicates = DegreePlanAnalysis.duplicatedRowIds(plan)
+    val duplicateCount = DegreePlanAnalysis.duplicateKeys(plan).size
+    val already = (plan.completed + plan.terms.flatMap { it.courses })
+        .firstNotNullOfOrNull { course -> course.key?.let { DegreePlanAnalysis.addingAgainNotice(plan, it) } }
     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (duplicateCount > 0) {
+            Text(
+                DegreePlanAnalysis.duplicateHeader(duplicateCount),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
         (plan.completed + plan.terms.flatMap { it.courses }).forEach { course ->
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
@@ -1347,10 +1363,16 @@ internal fun DegreeDuplicateRows(plan: DegreePlan) {
                 )
                 if (course.title.isNotBlank()) Text(course.title, style = MaterialTheme.typography.bodyLarge)
                 Text("${course.credits} hours", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                val description = course.key?.description
-                if (description != null && course.id in duplicates) DegreeDuplicateWarning(description)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
+        }
+        Text("Add a course", style = MaterialTheme.typography.titleSmall)
+        if (already != null) {
+            Text(
+                already,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
         }
     }
 }
@@ -1393,10 +1415,6 @@ private fun CourseRow(
             TextButton(onClick = { model.removeDegreeCourse(plan.id, course.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text("Remove", color = MaterialTheme.colorScheme.error)
             }
-        }
-        val description = course.key?.description
-        if (description != null && course.id in DegreePlanAnalysis.duplicatedRowIds(plan)) {
-            DegreeDuplicateWarning(description)
         }
         if (status is DegreePlanAnalysis.PrerequisiteStatus.Missing) {
             Text("Needs ${status.text}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)

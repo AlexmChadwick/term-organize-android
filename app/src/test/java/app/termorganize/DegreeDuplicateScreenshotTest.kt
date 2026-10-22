@@ -36,18 +36,19 @@ import java.io.File
 class DegreeDuplicateScreenshotTest {
     @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
-    @Test fun lightAndDarkWarnOnEachRepeatedRow() {
+    @Test fun lightAndDarkShowTheDuplicateHeaderAndAddNote() {
         val key = CourseKey("CS", "4973")
-        val warning = "CS 4973 is in your plan more than once. That's fine for special topics; otherwise remove the extra copy."
+        val header = "1 course appears more than once in this plan. Each copy still counts."
+        val adding = "Already in Fall 2026. Adding it again keeps both copies."
         val plan = DegreePlan(
-            name = "Topics",
+            name = "Seminars",
             terms = listOf(
                 DegreePlanTerm(
                     season = PlanSeason.FALL,
                     year = 2026,
                     courses = listOf(
-                        DegreePlanCourse.of(key, "Special Topics in Computer Science", 4.0, id = "row-a"),
-                        DegreePlanCourse.of(key, "Special Topics in Computer Science", 4.0, id = "row-b"),
+                        DegreePlanCourse.of(key, "Seminar", 4.0, id = "row-a"),
+                        DegreePlanCourse.of(key, "Seminar", 4.0, id = "row-b"),
                     ),
                 ),
             ),
@@ -60,13 +61,16 @@ class DegreeDuplicateScreenshotTest {
                 }
             }
         }
-        compose.onAllNodesWithText(warning, substring = false).assertCountEquals(2)
+        compose.onAllNodesWithText(header, substring = false).assertCountEquals(1)
+        compose.onAllNodesWithText(adding, substring = false).assertCountEquals(1)
         compose.onAllNodesWithText("CS 4973", substring = false).assertCountEquals(2)
+        compose.onAllNodesWithText("Seminar", substring = false).assertCountEquals(2)
         compose.waitForIdle()
         save(draw(), "degree-duplicates-light.png")
         dark = true
         compose.waitForIdle()
-        compose.onAllNodesWithText(warning, substring = false).assertCountEquals(2)
+        compose.onAllNodesWithText(header, substring = false).assertCountEquals(1)
+        compose.onAllNodesWithText(adding, substring = false).assertCountEquals(1)
         save(draw(), "degree-duplicates-dark.png")
     }
 

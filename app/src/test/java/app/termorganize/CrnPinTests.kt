@@ -235,7 +235,7 @@ class CrnPinTests {
         assertTrue(plan.admits(degreeCourse(key, "Seminar", "44444")))
         assertFalse(DegreeCourseRepeats.countsSeparately(first, first.copy(id = "other", crn = "11111")))
         assertTrue(DegreeCourseRepeats.countsSeparately(first, second))
-        assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(plan))
+        assertTrue(DegreePlanAnalysis.duplicateKeys(plan).isEmpty())
         assertEquals(8.0, DegreeAudit.run(plan, requirements()).plannedHours, 0.0)
         val completed = DegreePlan(name = "Done", completed = listOf(first, second))
         assertEquals(8.0, DegreeAudit.run(completed, requirements()).completedHours, 0.0)
@@ -243,7 +243,10 @@ class CrnPinTests {
             name = "Same",
             completed = listOf(first, first.copy(id = "copy", crn = "11111")),
         )
-        assertEquals(8.0, DegreeAudit.run(sameCrn, requirements()).completedHours, 0.0)
+        val sameAudit = DegreeAudit.run(sameCrn, requirements())
+        assertEquals(8.0, sameAudit.completedHours, 0.0)
+        assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(sameCrn))
+        assertEquals(listOf("CS 4973", "CS 4973 (2)"), sameAudit.unused.map { it.id })
         val unpinned = DegreePlan(
             name = "Unpinned",
             terms = listOf(

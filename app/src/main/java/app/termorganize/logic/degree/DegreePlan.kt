@@ -365,28 +365,58 @@ object DegreePlanAnalysis {
         return covering
     }
 
-    fun duplicateWarning(description: String): String =
-        "$description is in your plan more than once. That's fine for special topics; otherwise remove the extra copy."
-
-    /** Every row whose course number appears more than once, including completed and planned rows. */
-    fun duplicatedRowIds(plan: DegreePlan): Set<String> {
-        val grouped = LinkedHashMap<CourseKey, MutableList<String>>()
-        for (course in plan.completed + plan.terms.flatMap { it.courses }) {
-            val key = course.key ?: continue
-            grouped.getOrPut(key) { mutableListOf() }.add(course.id)
-        }
-        val ids = HashSet<String>()
-        for (group in grouped.values) if (group.size > 1) ids.addAll(group)
-        return ids
+    fun duplicateHeader(count: Int): String {
+        val noun = if (count == 1) "1 course appears" else "$count courses appear"
+        return "$noun more than once in this plan. Each copy still counts."
     }
 
-    fun duplicateKeys(plan: DegreePlan): Set<CourseKey> {
-        val counts = HashMap<CourseKey, Int>()
-        for (course in plan.completed + plan.terms.flatMap { it.courses }) {
+    fun addingAgain(termName: String): String =
+        "Already in $termName. Adding it again keeps both copies."
+
+    /**
+     * Where a course number already sits, so the add form can name it.
+     * A planned term wins over completed work. Completed copies use the Completed section name.
+     */
+    fun existingCopyTerm(plan: DegreePlan, key: CourseKey): String? {
+        val term = plan.terms.firstOrNull { term -> term.courses.any { it.key == key } }
+        if (term != null) return term.shortName
+        if (plan.completed.any { it.key == key }) return "Completed"
+        return null
+    }
+
+    fun addingAgainNotice(plan: DegreePlan, key: CourseKey): String? =
+        existingCopyTerm(plan, key)?.let(::addingAgain)
+
+    /**
+     * Rows that repeat a course number without counting separately.
+     * Different CRNs, and titles containing "topic", are separate and stay quiet.
+     * The same CRN twice, or two seminars with no CRN, are warned.
+     * Completed and planned rows are compared with each other.
+     */
+    fun duplicatedRowIds(plan: DegreePlan): Set<String> = warnedRows(plan).map { it.id }.toSet()
+
+    fun duplicateKeys(plan: DegreePlan): Set<CourseKey> = warnedRows(plan).mapNotNull { it.key }.toSet()
+
+    private fun planRows(plan: DegreePlan): List<DegreePlanCourse> =
+        plan.completed + plan.terms.flatMap { it.courses }
+
+    private fun warnedRows(plan: DegreePlan): List<DegreePlanCourse> {
+        val grouped = LinkedHashMap<CourseKey, MutableList<DegreePlanCourse>>()
+        for (course in planRows(plan)) {
             val key = course.key ?: continue
-            counts[key] = (counts[key] ?: 0) + 1
+            grouped.getOrPut(key) { mutableListOf() }.add(course)
         }
-        return counts.filterValues { it > 1 }.keys
+        val warned = ArrayList<DegreePlanCourse>()
+        for (group in grouped.values) {
+            if (group.size < 2) continue
+            for (course in group) {
+                val repeats = group.any { other ->
+                    other.id != course.id && !DegreeCourseRepeats.countsSeparately(course, other)
+                }
+                if (repeats) warned += course
+            }
+        }
+        return warned
     }
 }
 

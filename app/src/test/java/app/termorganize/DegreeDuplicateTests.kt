@@ -45,7 +45,8 @@ import org.junit.Test
 
 class DegreeDuplicateTests {
     private val key = CourseKey("CS", "4973")
-    private val warning = "CS 4973 is in your plan more than once. That's fine for special topics; otherwise remove the extra copy."
+    private val header = "1 course appears more than once in this plan. Each copy still counts."
+    private val adding = "Already in Fall 2026. Adding it again keeps both copies."
 
     @Test fun twoUnpinnedCopiesAreAddedWarnedAndBothCounted() {
         var plan = DegreePlan(
@@ -60,7 +61,8 @@ class DegreeDuplicateTests {
         plan = DegreePlanEditing.add(second, "fall", plan)
         assertEquals(listOf("row-a", "row-b"), plan.terms.single().courses.map { it.id })
         assertTrue(plan.terms.single().courses.all { it.crn == null })
-        assertEquals(warning, DegreePlanAnalysis.duplicateWarning(key.description))
+        assertEquals(header, DegreePlanAnalysis.duplicateHeader(DegreePlanAnalysis.duplicateKeys(plan).size))
+        assertEquals(adding, DegreePlanAnalysis.addingAgainNotice(plan, key))
         assertEquals(setOf("row-a", "row-b"), DegreePlanAnalysis.duplicatedRowIds(plan))
         assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(plan))
 
@@ -248,10 +250,95 @@ class DegreeDuplicateTests {
         assertEquals(setOf("row-a", "row-b"), DegreePlanAnalysis.duplicatedRowIds(mixed))
         assertEquals(setOf("row-a", "row-b"), DegreePlanAnalysis.duplicatedRowIds(planned))
         assertTrue(DegreePlanAnalysis.duplicatedRowIds(once).isEmpty())
+        assertEquals(header, DegreePlanAnalysis.duplicateHeader(1))
+        assertEquals(
+            "2 courses appear more than once in this plan. Each copy still counts.",
+            DegreePlanAnalysis.duplicateHeader(2),
+        )
+        assertEquals("Already in Completed. Adding it again keeps both copies.", DegreePlanAnalysis.addingAgainNotice(completed, key))
+        assertEquals(adding, DegreePlanAnalysis.addingAgainNotice(mixed, key))
         assertEquals(8.0, DegreeAudit.run(completed, electives()).completedHours, 0.0)
+        assertEquals(listOf("CS 4973", "CS 4973 (2)"), DegreeAudit.run(completed, electives()).result("electives")!!.used.map { it.id })
         assertEquals(4.0, DegreeAudit.run(mixed, electives()).completedHours, 0.0)
         assertEquals(4.0, DegreeAudit.run(mixed, electives()).plannedHours, 0.0)
         assertEquals(8.0, DegreeAudit.run(planned, electives()).plannedHours, 0.0)
+    }
+
+    @Test fun topicTitlesAndDifferentCrnsStayQuietWhileSameCrnWarns() {
+        val topics = DegreePlan(
+            name = "Topics",
+            terms = listOf(
+                DegreePlanTerm(
+                    id = "fall",
+                    season = PlanSeason.FALL,
+                    year = 2026,
+                    courses = listOf(
+                        copy("row-a", title = "Topics in Computer Science"),
+                        copy("row-b", title = "Topics in Computer Science"),
+                    ),
+                ),
+            ),
+        )
+        assertTrue(DegreePlanAnalysis.duplicateKeys(topics).isEmpty())
+        assertTrue(DegreePlanAnalysis.duplicatedRowIds(topics).isEmpty())
+        assertEquals(adding, DegreePlanAnalysis.addingAgainNotice(topics, key))
+        val topicAudit = DegreeAudit.run(topics, electives())
+        assertEquals(8.0, topicAudit.plannedHours, 0.0)
+        assertEquals(listOf("CS 4973", "CS 4973 (2)"), topicAudit.result("electives")!!.used.map { it.id })
+
+        val distinct = DegreePlan(
+            name = "Sections",
+            terms = listOf(
+                DegreePlanTerm(
+                    id = "fall",
+                    season = PlanSeason.FALL,
+                    year = 2026,
+                    courses = listOf(copy("row-a", crn = "11111"), copy("row-b", crn = "33333")),
+                ),
+            ),
+        )
+        assertTrue(DegreePlanAnalysis.duplicateKeys(distinct).isEmpty())
+        val distinctAudit = DegreeAudit.run(distinct, electives())
+        assertEquals(8.0, distinctAudit.plannedHours, 0.0)
+        assertEquals(listOf("CS 4973", "CS 4973 (2)"), distinctAudit.result("electives")!!.used.map { it.id })
+
+        val same = DegreePlan(
+            name = "Same",
+            terms = listOf(
+                DegreePlanTerm(
+                    id = "fall",
+                    season = PlanSeason.FALL,
+                    year = 2026,
+                    courses = listOf(copy("row-a", crn = "11111"), copy("row-b", crn = "11111")),
+                ),
+            ),
+        )
+        assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(same))
+        assertEquals(setOf("row-a", "row-b"), DegreePlanAnalysis.duplicatedRowIds(same))
+        val sameAudit = DegreeAudit.run(same, electives())
+        assertEquals(8.0, sameAudit.plannedHours, 0.0)
+        assertEquals(listOf("CS 4973", "CS 4973 (2)"), sameAudit.result("electives")!!.used.map { it.id })
+
+        val marketing = CourseKey("MKTG", "2602")
+        val twoNumbers = DegreePlan(
+            name = "Both",
+            completed = listOf(copy("row-a"), copy("row-b")),
+            terms = listOf(
+                DegreePlanTerm(
+                    season = PlanSeason.FALL,
+                    year = 2026,
+                    courses = listOf(
+                        DegreePlanCourse.of(marketing, "Marketing Management", 4.0, id = "mkt-a"),
+                        DegreePlanCourse.of(marketing, "Marketing Management", 4.0, id = "mkt-b"),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(setOf(key, marketing), DegreePlanAnalysis.duplicateKeys(twoNumbers))
+        assertEquals(
+            "2 courses appear more than once in this plan. Each copy still counts.",
+            DegreePlanAnalysis.duplicateHeader(DegreePlanAnalysis.duplicateKeys(twoNumbers).size),
+        )
     }
 
     @Test fun reorderingMovesOnlyTheChosenUnpinnedRow() {
@@ -287,8 +374,8 @@ class DegreeDuplicateTests {
         assertEquals(listOf("row-b"), updated.terms.first { it.id == "spring" }.courses.map { it.id })
     }
 
-    private fun copy(id: String, crn: String? = null) =
-        DegreePlanCourse.of(key, "Special Topics", 4.0, id = id, crn = crn)
+    private fun copy(id: String, crn: String? = null, title: String = "Seminar") =
+        DegreePlanCourse.of(key, title, 4.0, id = id, crn = crn)
 
     private fun electives() = ProgramRequirements(
         CatalogYear(2024),

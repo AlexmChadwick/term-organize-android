@@ -396,7 +396,7 @@ class DegreeAuditTests {
         val counted = audit.ruleResults.flatMap { it.used } + audit.unused
         assertEquals(2, counted.count { it.key.description == "MKTG 2602" })
         assertEquals(counted.size, counted.map { it.id }.toSet().size)
-        assertEquals(setOf(CourseKey("MKTG", "2602"), CourseKey("CS", "4973")), DegreePlanAnalysis.duplicateKeys(plan))
+        assertEquals(setOf(CourseKey("MKTG", "2602")), DegreePlanAnalysis.duplicateKeys(plan))
     }
 
     @Test fun requiredAlternativesMakeRoom() {
