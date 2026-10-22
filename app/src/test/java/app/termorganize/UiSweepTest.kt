@@ -79,7 +79,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitForIdle()
     }
     capture(rule, "$form-light", "settings")
-    scrollTo(rule, "Version 1.0")
+    scrollTo(rule, "Version 1.1.0")
     capture(rule, "$form-light", "settings-legal")
     step("home") {
         rule.onNodeWithText("Home").performClick()
@@ -255,7 +255,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitForIdle()
     }
     capture(rule, "$form-dark", "settings")
-    scrollTo(rule, "Version 1.0")
+    scrollTo(rule, "Version 1.1.0")
     capture(rule, "$form-dark", "settings-legal")
     rule.onNodeWithText("Home").performClick()
     rule.waitForIdle()
