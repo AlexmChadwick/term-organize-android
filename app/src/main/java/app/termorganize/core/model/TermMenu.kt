@@ -19,4 +19,17 @@ object TermMenu {
         }
         return (window + local).distinctBy { it.code }.sortedByDescending { it.code }
     }
+
+    /**
+     * Fills in `Term <code>` placeholders from catalogs already on the device.
+     * A description that came from Banner is left as Banner wrote it.
+     */
+    fun preferKnownNames(listed: List<Term>, known: Collection<Term>): List<Term> {
+        if (known.isEmpty()) return listed
+        val byCode = known.associateBy { it.code }
+        return listed.map { term ->
+            val loaded = byCode[term.code] ?: return@map term
+            if (term.bannerDescription == "Term ${term.code}") loaded else term
+        }
+    }
 }

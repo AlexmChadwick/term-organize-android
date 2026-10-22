@@ -21,6 +21,7 @@ import app.termorganize.core.model.Meeting
 import app.termorganize.core.model.Requisite
 import app.termorganize.core.model.Term
 import app.termorganize.core.model.TermCatalog
+import app.termorganize.core.model.TermMenu
 import app.termorganize.data.CatalogStore
 import app.termorganize.logic.degree.CatalogProgram
 import app.termorganize.logic.degree.CatalogYear
@@ -946,6 +947,39 @@ class CatalogCacheTests {
         assertEquals(listOf("202710"), store.localCodes())
         store.saveRemoteTerms(listOf(Term("202710", "Fall 2026 Semester"), Term("202630", "Spring 2026 Semester")))
         assertEquals(listOf("202710", "202630"), store.loadRemoteTerms().map { it.code })
+        assertEquals("202710", store.defaultTermCode())
+    }
+
+    @Test fun aFreshInstallDefaultsToTheNewestBundledTerm() {
+        val directory = tempDir()
+        fun snapshot(code: String, title: String) = TermCatalog(
+            term = Term(code, title),
+            courses = listOf(Course("CS", "3000", title)),
+        )
+        val store = CatalogStore(directory) { code ->
+            when (code) {
+                "202710" -> snapshot("202710", "Fall 2026 Semester")
+                "202730" -> snapshot("202730", "Spring 2027 Semester (View Only)")
+                else -> null
+            }
+        }
+        assertEquals("202730", store.defaultTermCode())
+        assertEquals(listOf("202730", "202710"), store.localCodes())
+        store.save(snapshot("202810", "Fall 2027 Semester"))
+        assertEquals("202730", store.defaultTermCode())
+        assertEquals(listOf("202810", "202730", "202710"), store.localCodes())
+        val listed = TermMenu.listed(emptyList(), store.localCodes())
+        val named = TermMenu.preferKnownNames(
+            listed,
+            listOf(
+                Term("202730", "Spring 2027 Semester (View Only)"),
+                Term("202710", "Fall 2026 Semester"),
+            ),
+        )
+        assertEquals(listOf("202810", "202730", "202710"), named.map { it.code })
+        assertEquals("Spring 2027", named.first { it.code == "202730" }.name)
+        assertEquals("Fall 2026", named.first { it.code == "202710" }.name)
+        assertEquals("Term 202810", named.first { it.code == "202810" }.bannerDescription)
     }
 
     @Test fun mergeKeepsKnownCourseDetailsAndTakesFreshSeats() {

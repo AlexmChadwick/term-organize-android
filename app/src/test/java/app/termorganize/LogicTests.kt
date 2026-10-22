@@ -65,6 +65,11 @@ import app.termorganize.logic.watchlist.WatchlistFormat
 import app.termorganize.logic.watchlist.WatchlistStatus
 import app.termorganize.logic.widget.WidgetMeeting
 import app.termorganize.logic.widget.WidgetScheduleData
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -509,16 +514,73 @@ class LogicTests {
         assertTrue(ProfessorPage.rateMyProfessorsUrl("Jane Doe").contains("q=Jane%20Doe"))
     }
 
+    @Test fun instructorEmailMayBeOmitted() {
+        val json = """
+            {"crn":"1","subject":"CS","number":"3000","instructors":[
+              {"name":"Doe, Jane","primary":true},
+              {"name":"Doe, John","email":"j.doe@northeastern.edu","primary":false},
+              {"name":"Roe, Pat","email":null}
+            ]}
+        """.trimIndent()
+        val section = AppJson.catalog.decodeFromString(CourseSection.serializer(), json)
+        val people = section.instructors!!
+        assertNull(people[0].email)
+        assertEquals("j.doe@northeastern.edu", people[1].email)
+        assertNull(people[2].email)
+    }
+
+    @Test fun spring2027CatalogLoadsWithOmittedEmails() {
+        val catalog = bundledCatalog("202730")
+        assertEquals("202730", catalog.term.code)
+        assertEquals("Spring 2027", catalog.term.name)
+        assertTrue(catalog.term.isViewOnly)
+        assertEquals(3076, catalog.courses.size)
+        assertEquals(8326, catalog.sections.size)
+        val people = catalog.sections.flatMap { it.instructors.orEmpty() }
+        assertTrue(people.any { it.email == null })
+        assertEquals("Algorithms and Data", catalog.courses.first { it.subject == "CS" && it.number == "3000" }.title)
+    }
+
+    @Test fun spring2027FileContainsOnlyWorkEmailDomains() {
+        val text = GZIPInputStream(bundledCatalogFile("202730").inputStream()).use { it.readBytes() }.decodeToString()
+        val sections = Json.parseToJsonElement(text).jsonObject.getValue("sections").jsonArray
+        val allowed = setOf("northeastern.edu", "neu.edu")
+        var addresses = 0
+        for (section in sections) {
+            val instructors = section.jsonObject["instructors"]?.jsonArray ?: continue
+            for (person in instructors) {
+                val email = person.jsonObject["email"] ?: continue
+                assertTrue(email is JsonPrimitive && email.isString)
+                val raw = email.jsonPrimitive.content
+                assertTrue(raw.isNotBlank())
+                val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                assertTrue(tokens.isNotEmpty())
+                for (token in tokens) {
+                    val domain = token.substringAfter('@', missingDelimiterValue = "").lowercase()
+                    assertTrue("bundled 202730 email domain: $domain", domain in allowed)
+                    addresses++
+                }
+            }
+        }
+        assertTrue(addresses > 0)
+    }
+
     companion object {
         private var index: CatalogIndex? = null
+
+        fun bundledCatalogFile(code: String): File = listOf(
+            File("src/main/assets/catalog/term-$code.json.gz"),
+            File("app/src/main/assets/catalog/term-$code.json.gz"),
+        ).first { it.exists() }
+
+        fun bundledCatalog(code: String): TermCatalog {
+            val text = GZIPInputStream(bundledCatalogFile(code).inputStream()).use { it.readBytes() }.decodeToString()
+            return AppJson.catalog.decodeFromString(TermCatalog.serializer(), text)
+        }
+
         fun bundledIndex(): CatalogIndex {
             index?.let { return it }
-            val file = listOf(
-                File("src/main/assets/catalog/term-202710.json.gz"),
-                File("app/src/main/assets/catalog/term-202710.json.gz"),
-            ).first { it.exists() }
-            val text = GZIPInputStream(file.inputStream()).use { it.readBytes() }.decodeToString()
-            val built = CatalogIndex.build(AppJson.catalog.decodeFromString(TermCatalog.serializer(), text))
+            val built = CatalogIndex.build(bundledCatalog("202710"))
             index = built
             return built
         }

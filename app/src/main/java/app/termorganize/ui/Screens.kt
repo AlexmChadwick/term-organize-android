@@ -826,7 +826,7 @@ private fun ScheduleScreen(model: AppModel) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Schedule", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
-        Text(index?.term?.name ?: "Fall 2026", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(index?.term?.name ?: "Catalog", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
             OutlinedTextField(name, { name = it }, label = { Text("New plan") }, modifier = Modifier.weight(1f), singleLine = true)
             Button(onClick = { model.createSchedule(name); name = "" }, modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp)) { Text("Add") }

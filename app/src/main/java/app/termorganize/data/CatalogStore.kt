@@ -12,6 +12,9 @@ import java.io.File
 /**
  * Catalogs downloaded from Banner, plus the last term list. A bundled snapshot is used when it
  * is newer than the download, or when the download is missing or unreadable.
+ *
+ * Startup opens [defaultTermCode], the newest snapshot in [bundledTermCodes]. A download of
+ * some other term does not change that: the app does not store the last term the picker used.
  */
 class CatalogStore(
     private val directory: File,
@@ -31,9 +34,15 @@ class CatalogStore(
 
     fun localCodes(): List<String> {
         val downloaded = directory.listFiles().orEmpty().mapNotNull { termCode(it.name) }
-        val bundledCodes = listOf("202710").filter { runCatching { bundled(it) }.getOrNull() != null }
-        return (downloaded + bundledCodes).distinct().sortedDescending()
+        return (downloaded + presentBundledCodes()).distinct().sortedDescending()
     }
+
+    /**
+     * Term a fresh install opens: the newest bundled snapshot [bundled] can read.
+     * Newer downloads of other terms stay on disk and in the picker, and do not take this slot.
+     */
+    fun defaultTermCode(): String? =
+        bundledTermCodes.sortedDescending().firstOrNull { present(it) }
 
     fun saveRemoteTerms(terms: List<Term>) {
         directory.mkdirs()
@@ -58,8 +67,15 @@ class CatalogStore(
     private fun freshness(catalog: TermCatalog): Pair<Double, Int> =
         catalog.sectionsUpdatedAt to catalog.courses.count { it.detailsLoaded }
 
+    private fun presentBundledCodes(): List<String> = bundledTermCodes.filter { present(it) }
+
+    private fun present(code: String): Boolean = runCatching { bundled(code) }.getOrNull() != null
+
     companion object {
         private const val TERMS = "remote-terms.json"
+
+        /** Snapshots shipped as `assets/catalog/term-<code>.json.gz`. */
+        val bundledTermCodes: List<String> = listOf("202710", "202730")
 
         fun fileName(code: String) = "term-$code.json"
 

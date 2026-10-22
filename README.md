@@ -8,7 +8,7 @@ The app is free software under the GNU Affero General Public License, version 3 
 
 ## What it does
 
-- Search the open term with shorthand (`orgo`, `fundies`, `linalg`), course codes, CRNs, and typo tolerance, plus subject, NUpath, level, seat, day, and instruction filters. Fall 2026 ships in the app. Other Banner terms download on demand and stay cached. If the main search finds nothing, an AndroidX AppSearch index is checked.
+- Search the open term with shorthand (`orgo`, `fundies`, `linalg`), course codes, CRNs, and typo tolerance, plus subject, NUpath, level, seat, day, and instruction filters. Fall 2026 and Spring 2027 ship in the app. A fresh install opens the newest bundled term. Other Banner terms download on demand and stay cached. If the main search finds nothing, an AndroidX AppSearch index is checked.
 - Course pages with prerequisite and corequisite trees, “prerequisite for”, sections, seats, and waitlists. Refresh one course from Banner when the network is available, and check older terms.
 - Schedule plans, a week calendar, conflict detection, a preferences survey, a deterministic description of the week (in place of Apple Intelligence), the full scoring weight table and sampler, ranked results with reasons, and suggestions when nothing fits.
 - Export a schedule as `.ics` with one event per meeting and each final. Add every meeting to Android Calendar (calendar permission), share a schedule image, and copy CRNs.
