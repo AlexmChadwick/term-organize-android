@@ -267,15 +267,18 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         fullSections = full
         conflicts = ScheduleConflicts.find(sections)
         missingCourses = entries.filter { it.isMissing || it.hasNoSections }.map { it.key }
-        var low = 0.0
-        var high = 0.0
+        var total = 0.0
         for (entry in entries) {
             if (!entry.countsTowardsCredits) continue
             val course = entry.course ?: continue
-            low += course.minCredits
-            high += course.maxCredits
+            total += app.termorganize.core.model.VariableCredits.accounted(
+                entry.planCourse.credits,
+                entry.planCourse.creditLow,
+                entry.planCourse.creditHigh,
+                course,
+            )
         }
-        credits = low to high
+        credits = total to total
     }
 
     val creditsLabel: String get() = CreditFormatter.label(credits.first, credits.second)
@@ -414,8 +417,16 @@ fun ScheduleCourseInput.Companion.inputs(plan: SchedulePlan, index: CatalogIndex
     val claimed = HashSet<String>()
     for (planCourse in plan.courses) {
         val course = index.course(planCourse.key)
-        val min = ceil(course?.minCredits ?: 0.0).toInt()
-        val max = ceil(course?.maxCredits ?: 0.0).toInt()
+        val points = if (course == null) 0 else ceil(
+            app.termorganize.core.model.VariableCredits.accounted(
+                planCourse.credits,
+                planCourse.creditLow,
+                planCourse.creditHigh,
+                course,
+            ),
+        ).toInt()
+        val min = points
+        val max = points
         val manual = planCourse.manualCRN
         if (manual != null) {
             claimed += manual

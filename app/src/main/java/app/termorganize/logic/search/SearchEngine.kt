@@ -16,6 +16,9 @@ enum class SearchSort(val label: String) { RELEVANCE("Best Match"), COURSE_NUMBE
 
 enum class InstructionFilter(val label: String) { ANY("Any"), IN_PERSON("In Person"), ONLINE("Online") }
 
+/** Northeastern numbers: under 5000 is undergraduate, 5000 and above is graduate. */
+enum class CourseLevelFilter(val label: String) { ALL("All"), UNDERGRAD("Undergrad"), GRAD("Grad") }
+
 data class SearchFilters(
     val subjects: Set<String> = emptySet(),
     val nupaths: Set<NUPath> = emptySet(),
@@ -33,6 +36,7 @@ data class SearchFilters(
     val noPrerequisites: Boolean = false,
     /** Same rule as [noPrerequisites], for [Course.coreqs]. */
     val noCorequisites: Boolean = false,
+    val courseLevel: CourseLevelFilter = CourseLevelFilter.ALL,
     val instruction: InstructionFilter = InstructionFilter.ANY,
     val allowedDays: DaySet? = null,
     val startsAfter: Int? = null,
@@ -51,6 +55,7 @@ data class SearchFilters(
             if (openSeatsOnly) n++
             if (noPrerequisites) n++
             if (noCorequisites) n++
+            if (courseLevel != CourseLevelFilter.ALL) n++
             if (instruction != InstructionFilter.ANY) n++
             if (allowedDays != null) n++
             if (startsAfter != null || endsBefore != null) n++
@@ -75,6 +80,11 @@ data class SearchFilters(
         if (maxCredits != null && course.minCredits > maxCredits) return false
         if (noPrerequisites && !knownEmpty(course.detailsLoaded, course.prereqs)) return false
         if (noCorequisites && !knownEmpty(course.detailsLoaded, course.coreqs)) return false
+        when (courseLevel) {
+            CourseLevelFilter.ALL -> Unit
+            CourseLevelFilter.UNDERGRAD -> if (course.key.numericValue >= 5000) return false
+            CourseLevelFilter.GRAD -> if (course.key.numericValue < 5000) return false
+        }
         return true
     }
 

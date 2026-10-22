@@ -32,9 +32,14 @@ data class PlanCourse(
     val colorIndex: Int = 0,
     /** Manually chosen section. Identity is this CRN in the plan's term, not the course number. */
     val crn: String? = null,
+    /** Chosen credits for a variable-credit course. Null until a value is saved. */
+    val credits: Double? = null,
+    val creditLow: Double? = null,
+    val creditHigh: Double? = null,
 ) {
     val id: CourseKey get() = key
     val manualCRN: String? get() = crn?.trim()?.takeIf { it.isNotEmpty() }
+    val isVariableCredit: Boolean get() = app.termorganize.core.model.VariableCredits.isVariable(creditLow, creditHigh)
 }
 
 @Serializable
@@ -189,8 +194,12 @@ data class DegreePlanCourse(
     val credits: Double = 0.0,
     /** Optional manually chosen section. A repeated course number does not need one. */
     val crn: String? = null,
+    /** Set together when this row is variable credit. Absent on a fixed-credit row. */
+    val creditLow: Double? = null,
+    val creditHigh: Double? = null,
 ) {
     val manualCRN: String? get() = crn?.trim()?.takeIf { it.isNotEmpty() }
+    val isVariableCredit: Boolean get() = app.termorganize.core.model.VariableCredits.isVariable(creditLow, creditHigh)
 
     companion object {
         fun of(
@@ -200,7 +209,9 @@ data class DegreePlanCourse(
             label: String? = null,
             id: String = UUID.randomUUID().toString(),
             crn: String? = null,
-        ) = DegreePlanCourse(id, key, label ?: key?.description ?: "", title, credits, crn)
+            creditLow: Double? = null,
+            creditHigh: Double? = null,
+        ) = DegreePlanCourse(id, key, label ?: key?.description ?: "", title, credits, crn, creditLow, creditHigh)
     }
 }
 
@@ -389,7 +400,8 @@ data class DegreePlan(
 
 @Serializable
 data class UserData(
-    val version: Int = 1,
+    /** 2 stores a chosen credit value on each variable-credit row. Older documents omit it and still load. */
+    val version: Int = 2,
     val preferences: AppPreferences = AppPreferences(),
     val saved: List<SavedCourse> = emptyList(),
     val recents: List<RecentCourse> = emptyList(),
@@ -406,7 +418,7 @@ object UserJson {
     fun decodeElement(element: JsonElement): UserData {
         val obj = element.jsonObject
         return UserData(
-            version = obj.int("version") ?: 1,
+            version = maxOf(obj.int("version") ?: 1, 2),
             preferences = obj.obj("preferences")?.let { runCatching { AppJson.user.decodeFromJsonElement(AppPreferences.serializer(), it) }.getOrNull() } ?: AppPreferences(),
             saved = obj.decodeEach("saved", SavedCourse.serializer()),
             recents = obj.decodeEach("recents", RecentCourse.serializer()),
@@ -485,7 +497,15 @@ class UserDataStore(var data: UserData = UserData()) {
 
     fun plan(id: String) = plans.firstOrNull { it.id == id }
 
-    fun addCourse(key: CourseKey, planId: String, required: Boolean = true, crn: String? = null): Boolean {
+    fun addCourse(
+        key: CourseKey,
+        planId: String,
+        required: Boolean = true,
+        crn: String? = null,
+        credits: Double? = null,
+        creditLow: Double? = null,
+        creditHigh: Double? = null,
+    ): Boolean {
         var added = false
         updatePlan(planId) { plan ->
             if (!plan.admitsCourse(key, crn)) plan
@@ -493,7 +513,15 @@ class UserDataStore(var data: UserData = UserData()) {
                 added = true
                 val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
                 plan.copy(
-                    courses = plan.courses + PlanCourse(key, isRequired = required, colorIndex = plan.nextColorIndex, crn = manual),
+                    courses = plan.courses + PlanCourse(
+                        key,
+                        isRequired = required,
+                        colorIndex = plan.nextColorIndex,
+                        crn = manual,
+                        credits = credits,
+                        creditLow = creditLow,
+                        creditHigh = creditHigh,
+                    ),
                     selectedCRNs = if (manual == null || manual in plan.selectedCRNs) plan.selectedCRNs else plan.selectedCRNs + manual,
                 )
             }
@@ -538,12 +566,20 @@ class UserDataStore(var data: UserData = UserData()) {
     }
 
     fun scheduleForDegreePlan(semester: DegreePlanTerm, termCode: String): ScheduleFromDegree? {
-        val rows = semester.courses.mapNotNull { course -> course.key?.let { it to course.manualCRN } }
-        if (rows.isEmpty()) return null
-        val existing = plansIn(termCode).firstOrNull { plan ->
-            plan.courses.map { it.key to it.manualCRN } == rows
+        val rows = semester.courses.mapNotNull { course ->
+            course.key?.let { key ->
+                SyncedRow(key, course.manualCRN, course.credits, course.creditLow, course.creditHigh)
+            }
         }
-        if (existing != null) return ScheduleFromDegree(existing, false, rows.size)
+        if (rows.isEmpty()) return null
+        val identity = rows.map { it.key to it.crn }
+        val existing = plansIn(termCode).firstOrNull { plan ->
+            plan.courses.map { it.key to it.manualCRN } == identity
+        }
+        if (existing != null) {
+            updatePlan(existing.id) { ScheduleCourseSync.merge(it, rows) }
+            return ScheduleFromDegree(plan(existing.id)!!, false, rows.size)
+        }
         val created = createPlan(DegreePlanEditing.scheduleName(semester, plansIn(termCode).map { it.name }), termCode)
         updatePlan(created.id) { ScheduleCourseSync.merge(it, rows) }
         val stored = plans.first { it.id == created.id }

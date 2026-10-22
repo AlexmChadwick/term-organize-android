@@ -34,22 +34,27 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.layout.layout
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -66,6 +71,9 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaul
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
@@ -77,10 +85,19 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -95,10 +112,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.termorganize.logic.search.CatalogIndex
+import app.termorganize.logic.search.CourseLevelFilter
 import app.termorganize.R
 import app.termorganize.core.model.Course
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
+import app.termorganize.core.model.CpsRestriction
+import app.termorganize.core.model.VariableCredits
 import app.termorganize.core.model.EquivalenceSuggester
 import app.termorganize.core.model.PrerequisiteListing
 import app.termorganize.core.model.DaySet
@@ -287,15 +307,22 @@ fun TermOrganizeRoot(
             },
         ) {
             Scaffold(snackbarHost = { SnackbarHost(snack) }, containerColor = MaterialTheme.colorScheme.background) { padding ->
-                Box(Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                    Box(Modifier.widthIn(max = PageMaxWidth).fillMaxHeight().fillMaxWidth()) {
+                BoxWithConstraints(Modifier.padding(padding).fillMaxSize()) {
+                    val wideSearch = maxWidth >= 840.dp && tab == Tab.Search &&
+                        !route.startsWith("course/") && !route.startsWith("section/")
+                    Box(
+                        Modifier.align(Alignment.TopCenter).then(
+                            if (wideSearch) Modifier.fillMaxSize()
+                            else Modifier.widthIn(max = PageMaxWidth).fillMaxHeight().fillMaxWidth(),
+                        ),
+                    ) {
                     when {
                         route.startsWith("course/") -> CourseRoute(route, model) { route = "search" }
                         route.startsWith("section/") -> SectionRoute(route, model) { route = "search" }
                         route.startsWith("professor/") -> ProfessorRoute(route.removePrefix("professor/"), model) { route = "more/professors" }
                         route.startsWith("room/") -> RoomRoute(route.removePrefix("room/"), model) { route = "more/rooms" }
                         tab == Tab.Home -> HomeScreen(model, status, index == null) { route = it }
-                        tab == Tab.Search -> SearchScreen(model, queryOf(route)) { route = it }
+                        tab == Tab.Search -> SearchScreen(model, queryOf(route), { route = it }, listDetail = wideSearch)
                         tab == Tab.Schedule -> ScheduleScreen(model)
                         tab == Tab.Degree -> DegreeScreen(model, onImportPdf)
                         else -> MoreScreen(route, model, onImportJson) { route = it }
@@ -411,7 +438,7 @@ private fun Stat(value: String, label: String, modifier: Modifier = Modifier) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Unit) {
+private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Unit, listDetail: Boolean = false) {
     val index by model.index.collectAsState()
     val user by model.user.collectAsState()
     var text by remember(initial) { mutableStateOf(initial) }
@@ -424,85 +451,121 @@ private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Uni
         indexed = if (!missed) emptyList() else withContext(Dispatchers.IO) { model.courseIndexHits(text) }
     }
     val browsing = response == null || (text.isBlank() && filters.isEmpty)
-    Column(Modifier.fillMaxSize()) {
-        Column(Modifier.padding(horizontal = 16.dp).padding(top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth().testTag("search-field"),
-                label = { Text("Course, professor, CRN, or shorthand") },
-                singleLine = true,
-                supportingText = { Text("Try orgo, fundies, cs3000, or a five-digit CRN. Typos are allowed.") },
-            )
-            ChipFlow {
-                FilterChip(selected = showFilters, onClick = { showFilters = true }, label = { Text(if (filters.activeCount == 0) "Filters" else "Filters · ${filters.activeCount}") })
-                if (text.isNotBlank()) TextButton(onClick = { model.rememberSearch(text) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save search") }
-            }
+    val catalogRows = response?.results?.take(80).orEmpty()
+    val rows = if (catalogRows.isNotEmpty()) {
+        catalogRows.map { result ->
+            val note = index?.let { CpsRestriction.courseNote(it.sections(result.course.key)) }
+            val meta = listOfNotNull(result.course.creditsLabel, result.stats.availabilityLabel, result.matchNote, note).joinToString(" · ")
+            CourseResultRow(result.course.code, result.course.title, meta, result.course.subject, result.course.number)
         }
-        when {
-            index == null -> CircularProgressIndicator(Modifier.padding(24.dp))
-            browsing -> Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Recent searches", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
-                if (user.searchHistory.isEmpty()) EmptyText("Nothing saved yet.")
+    } else {
+        indexed.map { CourseResultRow(it.code, it.title, "From the AppSearch index", it.subject, it.number) }
+    }
+    var selected by remember(rows.map { it.code }) { mutableIntStateOf(0) }
+    val safeSelected = if (rows.isEmpty()) 0 else selected.coerceIn(0, rows.lastIndex)
+    val listPane: @Composable (Modifier) -> Unit = { modifier ->
+        Column(modifier) {
+            Column(Modifier.padding(horizontal = 16.dp).padding(top = 16.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth().testTag("search-field"),
+                    label = { Text("Course, professor, CRN, or shorthand") },
+                    singleLine = true,
+                    supportingText = { Text("Try orgo, fundies, cs3000, or a five-digit CRN. Typos are allowed.") },
+                )
                 ChipFlow {
-                    user.searchHistory.forEach { item -> AssistChip(onClick = { text = item }, label = { Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis) }) }
+                    FilterChip(selected = showFilters, onClick = { showFilters = true }, label = { Text(if (filters.activeCount == 0) "Filters" else "Filters · ${filters.activeCount}") })
+                    if (text.isNotBlank()) TextButton(onClick = { model.rememberSearch(text) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Save search") }
                 }
             }
-            else -> LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val crn = response.crnMatch
-                if (crn != null) {
-                    item {
-                        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clickable { open("section/${crn.crn}") }) {
+            when {
+                index == null -> CircularProgressIndicator(Modifier.padding(24.dp))
+                browsing -> Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Recent searches", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+                    if (user.searchHistory.isEmpty()) EmptyText("Nothing saved yet.")
+                    ChipFlow {
+                        user.searchHistory.forEach { item -> AssistChip(onClick = { text = item }, label = { Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis) }) }
+                    }
+                }
+                else -> Column(Modifier.weight(1f).fillMaxWidth()) {
+                    val crn = response.crnMatch
+                    if (crn != null) {
+                        Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).clickable { open("section/${crn.crn}") }) {
                             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 Text("CRN ${crn.crn}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                                 Text("${crn.courseKey.description} · ${crn.title}", style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
-                }
-                if (response.instructors.isNotEmpty()) {
-                    item { Text("Professors", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 16.dp)) }
-                    items(response.instructors.take(5), key = { it.id }) { person ->
-                        ListItem(
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                            headlineContent = { Text(person.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            supportingContent = {
-                                Text(
-                                    countText(person.courseKeys.size, "course", "courses"),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            modifier = Modifier.clickable { open("professor/${java.net.URLEncoder.encode(person.name, "UTF-8")}") },
-                        )
+                    if (response.instructors.isNotEmpty()) {
+                        Text("Professors", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+                        response.instructors.take(5).forEach { person ->
+                            ListItem(
+                                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                                headlineContent = { Text(person.displayName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                supportingContent = {
+                                    Text(
+                                        countText(person.courseKeys.size, "course", "courses"),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
+                                modifier = Modifier.clickable { open("professor/${java.net.URLEncoder.encode(person.name, "UTF-8")}") },
+                            )
+                        }
                     }
-                }
-                item {
                     Text(
-                        countText(response.totalCount, "course", "courses"),
+                        countText(if (catalogRows.isNotEmpty()) response.totalCount else rows.size, "course", "courses"),
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(horizontal = 16.dp),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                     )
-                }
-                if (response.results.isEmpty()) {
-                    item {
+                    if (rows.isEmpty()) {
                         Text(
-                            if (indexed.isEmpty()) "No courses match. Loosen a filter or try a shorter query." else "Nothing in the main search. The on-device index found:",
+                            "No courses match. Loosen a filter or try a shorter query.",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp),
                         )
+                    } else {
+                        if (catalogRows.isEmpty()) {
+                            Text(
+                                "Nothing in the main search. The on-device index found:",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                            )
+                        }
+                        CourseResultList(
+                            rows = rows,
+                            selected = safeSelected,
+                            onSelected = { selected = it },
+                            listDetail = listDetail,
+                            onOpen = { indexInList ->
+                                val row = rows[indexInList]
+                                open("course/${row.subject}/${row.number}")
+                            },
+                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                        )
                     }
-                    items(indexed, key = { "index-${it.code}" }) { hit ->
-                        CourseHit(hit.code, hit.title, "From the AppSearch index") { open("course/${hit.subject}/${hit.number}") }
-                    }
-                }
-                items(response.results.take(80), key = { it.id.description }) { result ->
-                    val meta = listOfNotNull(result.course.creditsLabel, result.stats.availabilityLabel, result.matchNote).joinToString(" · ")
-                    CourseHit(result.course.code, result.course.title, meta) { open("course/${result.course.subject}/${result.course.number}") }
                 }
             }
         }
+    }
+    if (listDetail) {
+        Row(Modifier.fillMaxSize()) {
+            listPane(Modifier.weight(0.42f).fillMaxHeight())
+            val shown = catalogRows.getOrNull(safeSelected)?.course
+            Box(Modifier.weight(0.58f).fillMaxHeight()) {
+                if (shown == null) {
+                    EmptyText("Select a course to see its sections.")
+                } else {
+                    CourseScreen(shown, model, back = {}, embedded = true)
+                }
+            }
+        }
+    } else {
+        listPane(Modifier.fillMaxSize())
     }
     if (showFilters && index != null) {
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -512,9 +575,120 @@ private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Uni
     }
 }
 
+internal data class CourseResultRow(
+    val code: String,
+    val title: String,
+    val meta: String,
+    val subject: String,
+    val number: String,
+)
+
+/**
+ * One step along the result list. Null means this key is not a result-list arrow.
+ * Callers attach it only to a focused result row, so a search field never sees it.
+ */
+internal fun movedResultIndex(key: Key, index: Int, count: Int): Int? {
+    if (count <= 0) return null
+    val delta = when (key) {
+        Key.DirectionUp -> -1
+        Key.DirectionDown -> 1
+        else -> return null
+    }
+    return (index + delta).coerceIn(0, count - 1)
+}
+
+/**
+ * Course rows only. Arrow keys are handled on the focused row, so a search field keeps them.
+ * Up and down move one row. In a list-detail layout the caller shows that row beside the list.
+ */
 @Composable
-private fun CourseHit(code: String, title: String, meta: String, open: () -> Unit) {
-    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clickable(onClick = open)) {
+internal fun CourseResultList(
+    rows: List<CourseResultRow>,
+    selected: Int,
+    onSelected: (Int) -> Unit,
+    listDetail: Boolean,
+    onOpen: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    var listFocused by remember { mutableStateOf(false) }
+    var focusGeneration by remember { mutableIntStateOf(0) }
+    var focusIndex by remember { mutableIntStateOf(0) }
+    LaunchedEffect(focusGeneration) {
+        if (focusGeneration == 0 || rows.isEmpty()) return@LaunchedEffect
+        listState.scrollToItem(focusIndex.coerceIn(0, rows.lastIndex))
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        contentPadding = PaddingValues(bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(rows.size, key = { rows[it].code + it }) { index ->
+            val requester = remember { FocusRequester() }
+            val row = rows[index]
+            val highlighted = index == selected && (listDetail || listFocused)
+            LaunchedEffect(focusGeneration) {
+                if (focusGeneration != 0 && focusIndex == index) {
+                    runCatching { requester.requestFocus() }
+                }
+            }
+            CourseHit(
+                code = row.code,
+                title = row.title,
+                meta = row.meta,
+                highlighted = highlighted,
+                modifier = Modifier
+                    .focusRequester(requester)
+                    .onFocusChanged { state ->
+                        if (state.isFocused || state.hasFocus) {
+                            listFocused = true
+                            if (selected != index) onSelected(index)
+                        } else if (listFocused && selected == index) {
+                            listFocused = false
+                        }
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when (event.key) {
+                            Key.DirectionUp, Key.DirectionDown -> {
+                                val next = movedResultIndex(event.key, index, rows.size) ?: return@onPreviewKeyEvent false
+                                if (next != index) {
+                                    onSelected(next)
+                                    focusIndex = next
+                                    focusGeneration++
+                                }
+                                true
+                            }
+                            Key.Enter, Key.NumPadEnter, Key.DirectionCenter -> {
+                                if (!listDetail) onOpen(index)
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                    .testTag("search-result-$index")
+                    .clickable {
+                        onSelected(index)
+                        if (!listDetail) onOpen(index)
+                    },
+            )
+        }
+    }
+}
+
+@Composable
+private fun CourseHit(
+    code: String,
+    title: String,
+    meta: String,
+    highlighted: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        colors = if (highlighted) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer) else CardDefaults.cardColors(),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(code, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -538,6 +712,24 @@ internal fun FilterSheet(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Filters", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
+        Text("Undergrad or grad", style = MaterialTheme.typography.titleSmall)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            CourseLevelFilter.entries.forEachIndexed { index, level ->
+                SegmentedButton(
+                    selected = filters.courseLevel == level,
+                    onClick = { onChange(filters.copy(courseLevel = level)) },
+                    shape = SegmentedButtonDefaults.itemShape(index = index, count = CourseLevelFilter.entries.size),
+                    modifier = Modifier.testTag(
+                        when (level) {
+                            CourseLevelFilter.ALL -> "filter-level-all"
+                            CourseLevelFilter.UNDERGRAD -> "filter-level-undergrad"
+                            CourseLevelFilter.GRAD -> "filter-level-grad"
+                        },
+                    ),
+                    label = { Text(level.label) },
+                )
+            }
+        }
         Text("Subjects", style = MaterialTheme.typography.titleSmall)
         ChipFlow {
             index.activeSubjects.take(24).forEach { subject ->
@@ -703,7 +895,7 @@ private fun SectionRoute(route: String, model: AppModel, back: () -> Unit) {
 }
 
 @Composable
-private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, highlight: String? = null) {
+private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, highlight: String? = null, embedded: Boolean = false) {
     val index by model.index.collectAsState()
     val sections = model.sections(course.key)
     var live by remember(course.key) { mutableStateOf<List<CourseSection>?>(null) }
@@ -711,8 +903,13 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
     val shown = live ?: sections
     val older by model.olderNote.collectAsState()
     LaunchedEffect(course.key) { model.ensureCourseDetails(course.key) }
-    DetailPage(course.code, back) {
+    val body: @Composable ColumnScope.() -> Unit = {
+        if (embedded) Text(course.code, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
         Text(course.title, style = MaterialTheme.typography.titleLarge)
+        val courseNote = CpsRestriction.courseNote(shown)
+        if (courseNote != null) {
+            Text(courseNote, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Text(
             "${course.creditsLabel}${course.college?.let { " · $it" } ?: ""}",
             style = MaterialTheme.typography.bodyLarge,
@@ -769,11 +966,23 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(section.instructorLabel, style = MaterialTheme.typography.bodyLarge)
+                    if (section.cpsOnly == true) {
+                        Text(CpsRestriction.SECTION_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (section.honors) Text("Honors", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
                     TextButton(onClick = { model.watch(section, course.title) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Alert me if a seat opens") }
                 }
             }
         }
+    }
+    if (embedded) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = body,
+        )
+    } else {
+        DetailPage(course.code, back, body)
     }
 }
 
@@ -874,8 +1083,9 @@ private fun ScheduleScreen(model: AppModel) {
         WeekCalendar(selected, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
-        plan.courses.forEach { course ->
-            val title = index?.course(course.key)?.title.orEmpty()
+        plan.courses.forEachIndexed { rowIndex, course ->
+            val listed = index?.course(course.key)
+            val title = listed?.title.orEmpty()
             val sectionTitle = index?.section(course.crn ?: "")?.title?.takeIf { course.crn != null && it.isNotBlank() }
             Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -886,6 +1096,12 @@ private fun ScheduleScreen(model: AppModel) {
                     )
                     val detail = sectionTitle ?: title
                     if (detail.isNotBlank()) Text(detail, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    val low = course.creditLow ?: listed?.takeIf { it.isVariableCredit }?.minCredits
+                    val high = course.creditHigh ?: listed?.takeIf { it.isVariableCredit }?.maxCredits
+                    val chosen = course.credits ?: listed?.creditHours
+                    if (low != null && high != null && chosen != null && VariableCredits.isVariable(low, high)) {
+                        CreditStepper(chosen, low, high) { model.setScheduleCredits(plan.id, rowIndex, it) }
+                    }
                 }
                 TextButton(onClick = { model.removeCourse(plan.id, course.key, course.crn) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             }
@@ -1207,6 +1423,8 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(credits, { credits = it }, label = { Text("Hours") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         val parsedKey = CourseKey.parse(code)
+        val listedCourse = parsedKey?.let { index?.course(it) }
+        val seededCredits = VariableCredits.seed(listedCourse, credits.toDoubleOrNull() ?: 0.0)
         val alreadyThere = parsedKey?.let { DegreePlanAnalysis.addingAgainNotice(plan, it) }
         if (alreadyThere != null) {
             Text(
@@ -1217,7 +1435,14 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         }
         ChipFlow {
             Button(onClick = {
-                val course = DegreePlanCourse.of(parsedKey, title.ifBlank { parsedKey?.description ?: code }, credits.toDoubleOrNull() ?: 0.0, code)
+                val course = DegreePlanCourse.of(
+                    parsedKey,
+                    title.ifBlank { parsedKey?.description ?: code },
+                    seededCredits.credits,
+                    code,
+                    creditLow = seededCredits.low,
+                    creditHigh = seededCredits.high,
+                )
                 model.addCompleted(plan.id, course)
             }) { Text("Completed") }
             val next = DegreePlanAutofill.nextSemesters(plan, 1).firstOrNull()
@@ -1225,7 +1450,18 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
                 OutlinedButton(onClick = {
                     model.addTerm(plan.id, next.season, next.year)
                     val termId = model.user.value.degreePlans.first { it.id == plan.id }.terms.first { it.season == next.season && it.year == next.year }.id
-                    model.addPlanned(plan.id, termId, DegreePlanCourse.of(parsedKey, title.ifBlank { parsedKey?.description ?: code }, credits.toDoubleOrNull() ?: 0.0, code))
+                    model.addPlanned(
+                        plan.id,
+                        termId,
+                        DegreePlanCourse.of(
+                            parsedKey,
+                            title.ifBlank { parsedKey?.description ?: code },
+                            seededCredits.credits,
+                            code,
+                            creditLow = seededCredits.low,
+                            creditHigh = seededCredits.high,
+                        ),
+                    )
                 }) { Text("Next semester") }
             }
         }
@@ -1378,6 +1614,30 @@ internal fun DegreeDuplicateRows(plan: DegreePlan) {
 }
 
 @Composable
+internal fun CreditStepper(chosen: Double, low: Double, high: Double, onChange: (Double) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        FilledTonalIconButton(
+            onClick = { onChange(VariableCredits.clamp(chosen - 1.0, low, high)) },
+            enabled = chosen > low + 1e-6,
+        ) {
+            Icon(Icons.Filled.Remove, contentDescription = "Fewer credits")
+        }
+        Text(
+            VariableCredits.label(chosen, low, high),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 8.dp).testTag("credit-stepper"),
+        )
+        FilledTonalIconButton(
+            onClick = { onChange(VariableCredits.clamp(chosen + 1.0, low, high)) },
+            enabled = chosen < high - 1e-6,
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "More credits")
+        }
+    }
+}
+
+@Composable
 private fun CourseRow(
     plan: DegreePlan,
     course: DegreePlanCourse,
@@ -1410,7 +1670,18 @@ private fun CourseRow(
                 if (course.title.isNotBlank()) {
                     Text(course.title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
-                Text("${course.credits} hours", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val listed = course.key?.let { index?.course(it) }
+                val low = course.creditLow ?: listed?.takeIf { it.isVariableCredit }?.minCredits
+                val high = course.creditHigh ?: listed?.takeIf { it.isVariableCredit }?.maxCredits
+                if (low != null && high != null && VariableCredits.isVariable(low, high)) {
+                    CreditStepper(course.credits, low, high) { model.setDegreeCredits(plan.id, course.id, it) }
+                } else {
+                    Text("${course.credits} hours", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                val note = course.key?.let { CpsRestriction.courseNote(index?.sections(it).orEmpty()) }
+                if (note != null) {
+                    Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             TextButton(onClick = { model.removeDegreeCourse(plan.id, course.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text("Remove", color = MaterialTheme.colorScheme.error)

@@ -10,6 +10,7 @@ import app.termorganize.core.model.Campus
 import app.termorganize.core.model.CourseInfo
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
+import app.termorganize.core.model.SectionRestriction
 import app.termorganize.core.model.Subject
 import app.termorganize.core.model.Term
 import io.ktor.client.HttpClient
@@ -26,6 +27,7 @@ import io.ktor.http.contentType
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -95,6 +97,23 @@ class BannerClient(
      * Instructors for one section. The search-results row leaves faculty empty;
      * this is the call the Banner page makes when a row is expanded.
      */
+    /**
+     * Restriction lists for each section. Requests run one after another so a course with many
+     * sections does not stampede Banner. A failed section stays out of the map and remains unknown.
+     */
+    suspend fun fetchRestrictions(term: String, crns: List<String>): Map<String, List<SectionRestriction>> {
+        val wanted = crns.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (wanted.isEmpty()) return emptyMap()
+        val cookie = openSession(term)
+        val found = LinkedHashMap<String, List<SectionRestriction>>()
+        for ((index, crn) in wanted.withIndex()) {
+            if (index > 0) delay(250)
+            val html = runCatching { postRestrictions(term, crn, cookie) }.getOrNull() ?: continue
+            found[crn] = BannerParsers.restrictions(html)
+        }
+        return found
+    }
+
     suspend fun facultyMeetings(term: String, crn: String, cookie: String): List<BannerMeetingFaculty> {
         val text = client.get(base + "searchResults/getFacultyMeetingTimes?term=$term&courseReferenceNumber=$crn") {
             header(HttpHeaders.Cookie, cookie)
@@ -244,6 +263,15 @@ class BannerClient(
         val text = client.get(base + "courseSearch/get_subjectcoursecombo?$query").bodyAsText()
         val items = runCatching { AppJson.catalog.decodeFromString<List<BannerCodeDescription>>(text) }.getOrElse { return false }
         return BannerParsers.catalogCodes(items, course)
+    }
+
+    private suspend fun postRestrictions(term: String, crn: String, cookie: String): String {
+        val response = client.post(base + "searchResults/getRestrictions") {
+            contentType(ContentType.Application.FormUrlEncoded)
+            header(HttpHeaders.Cookie, cookie)
+            setBody("term=$term&courseReferenceNumber=$crn")
+        }
+        return response.bodyAsText()
     }
 
     private suspend fun postCourseForm(path: String, term: String, course: CourseKey): String {

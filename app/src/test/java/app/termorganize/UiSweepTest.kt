@@ -108,7 +108,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitForIdle()
     }
     step("course") {
-        rule.onNodeWithText("Algorithms", substring = true).performClick()
+        openCourseResult(rule)
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Prerequisites")).fetchSemanticsNodes().isNotEmpty() }
     }
     capture(rule, "$form-light", "course")
@@ -200,7 +200,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
         replace(rule, "search-field", "CS 3000")
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Algorithms", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-        rule.onNodeWithText("Algorithms", substring = true).performClick()
+        openCourseResult(rule)
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Add to schedule")).fetchSemanticsNodes().isNotEmpty() }
         scrollTo(rule, "Add to schedule")
         rule.onNodeWithText("Add to schedule").performClick()
@@ -276,7 +276,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     capture(rule, "$form-dark", "search-filters")
     scrollTo(rule, "Done")
     rule.onNodeWithText("Done").performClick()
-    rule.onNodeWithText("Algorithms", substring = true).performClick()
+    openCourseResult(rule)
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Prerequisites")).fetchSemanticsNodes().isNotEmpty() }
     capture(rule, "$form-dark", "course")
     scrollTo(rule, "Alert me if a seat opens")
@@ -325,7 +325,14 @@ private fun scrollTo(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActiv
     nodes[0].performScrollTo()
 }
 
+private fun openCourseResult(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>) {
+    val results = rule.onAllNodes(hasTestTag("search-result-0"), useUnmergedTree = true)
+    if (results.fetchSemanticsNodes().isNotEmpty()) results[0].performClick()
+    else rule.onNodeWithText("Algorithms", substring = true).performClick()
+}
+
 private fun goBack(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>) {
+    if (!tagged(rule, "back")) return
     rule.onNode(hasTestTag("back"), useUnmergedTree = true).performClick()
     rule.waitForIdle()
 }

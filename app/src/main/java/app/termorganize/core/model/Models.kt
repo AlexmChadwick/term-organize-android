@@ -126,11 +126,15 @@ data class Course(
     val college: String? = null,
     val department: String? = null,
     val detailsLoaded: Boolean = false,
+    /** Banner's creditHours. For a variable-credit course this is only the default, often 4. */
+    val creditHours: Double? = null,
 ) {
     val key: CourseKey get() = CourseKey(subject, number)
     val code: String get() = key.description
     val creditsLabel: String get() = CreditFormatter.label(minCredits, maxCredits)
     val nupaths: List<NUPath> get() = NUPath.from(attributes)
+    /** High is present and different from low. A null high is stored as the same value as low. */
+    val isVariableCredit: Boolean get() = VariableCredits.isVariable(minCredits, maxCredits)
 }
 
 object CreditFormatter {
@@ -326,8 +330,17 @@ data class CourseSection(
     val description: String? = null,
     val prereqs: Requisite? = null,
     val coreqs: Requisite? = null,
+    /** Banner creditHours. A default, not the student's choice. */
+    val creditHours: Double? = null,
+    val creditHourLow: Double? = null,
+    /** Null on a fixed-credit section. */
+    val creditHourHigh: Double? = null,
+    /** Null until the restriction page has been loaded. An empty list was loaded and listed nothing. */
+    val restrictions: List<SectionRestriction>? = null,
 ) {
     val id: String get() = crn
+    val isVariableCredit: Boolean get() = VariableCredits.isVariable(creditHourLow, creditHourHigh)
+    val cpsOnly: Boolean? get() = CpsRestriction.isCpsOnly(restrictions)
     val courseKey: CourseKey get() = CourseKey(subject, number)
     val isOpen: Boolean get() = seatsRemaining > 0
     val hasWaitlist: Boolean get() = waitlistCapacity > 0
