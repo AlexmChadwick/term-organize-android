@@ -365,16 +365,28 @@ object DegreePlanAnalysis {
         return covering
     }
 
-    fun duplicateKeys(plan: DegreePlan): Set<CourseKey> {
-        val planned = plan.terms.flatMap { it.courses }
-        val duplicates = mutableSetOf<CourseKey>()
-        planned.forEachIndexed { index, course ->
-            val key = course.key ?: return@forEachIndexed
-            val repeatsPlanned = planned.take(index).any { it.key == key && !DegreeCourseRepeats.countsSeparately(it, course) }
-            val repeatsCompleted = plan.completed.any { it.key == key && !DegreeCourseRepeats.countsSeparately(it, course) }
-            if (repeatsPlanned || repeatsCompleted) duplicates += key
+    fun duplicateWarning(description: String): String =
+        "$description is in your plan more than once. That's fine for special topics; otherwise remove the extra copy."
+
+    /** Every row whose course number appears more than once, including completed and planned rows. */
+    fun duplicatedRowIds(plan: DegreePlan): Set<String> {
+        val grouped = LinkedHashMap<CourseKey, MutableList<String>>()
+        for (course in plan.completed + plan.terms.flatMap { it.courses }) {
+            val key = course.key ?: continue
+            grouped.getOrPut(key) { mutableListOf() }.add(course.id)
         }
-        return duplicates
+        val ids = HashSet<String>()
+        for (group in grouped.values) if (group.size > 1) ids.addAll(group)
+        return ids
+    }
+
+    fun duplicateKeys(plan: DegreePlan): Set<CourseKey> {
+        val counts = HashMap<CourseKey, Int>()
+        for (course in plan.completed + plan.terms.flatMap { it.courses }) {
+            val key = course.key ?: continue
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        return counts.filterValues { it > 1 }.keys
     }
 }
 
@@ -387,7 +399,11 @@ data class ScheduleAutofillSuggestion(
     val isExactTerm: Boolean,
     val courses: List<CourseKey>,
     val unavailable: List<CourseKey>,
+    /** CRN already stored for each [courses] entry. Null means the row has no section. */
+    val courseCRNs: List<String?> = emptyList(),
 ) {
+    fun syncedRows(): List<Pair<CourseKey, String?>> =
+        courses.mapIndexed { index, key -> key to courseCRNs.getOrNull(index)?.trim()?.takeIf { it.isNotEmpty() } }
     sealed class Source {
         data class Degree(val planId: String, val termId: String) : Source()
         data class Schedule(val planId: String) : Source()
@@ -397,6 +413,28 @@ data class ScheduleAutofillSuggestion(
             is Source.Degree -> "degree-${source.planId}-${source.termId}"
             is Source.Schedule -> "schedule-${source.planId}"
         }
+}
+
+/** Copies schedule rows without collapsing a repeated course number or choosing a section. */
+object ScheduleCourseSync {
+    fun merge(plan: SchedulePlan, rows: List<Pair<CourseKey, String?>>): SchedulePlan {
+        val open = plan.courses.map { it.key to it.manualCRN }.toMutableList()
+        var courses = plan.courses
+        var selected = plan.selectedCRNs
+        for ((key, raw) in rows) {
+            val crn = raw?.trim()?.takeIf { it.isNotEmpty() }
+            val match = open.indexOfFirst { it.first == key && it.second == crn }
+            if (match >= 0) {
+                open.removeAt(match)
+                continue
+            }
+            val used = courses.map { it.colorIndex }.toSet()
+            val color = (0 until COURSE_COLOR_COUNT).firstOrNull { it !in used } ?: courses.size % COURSE_COLOR_COUNT
+            courses = courses + PlanCourse(key, colorIndex = color, crn = crn)
+            if (crn != null && crn !in selected) selected = selected + crn
+        }
+        return if (courses === plan.courses) plan else plan.copy(courses = courses, selectedCRNs = selected)
+    }
 }
 
 object DegreePlanAutofill {
@@ -410,28 +448,53 @@ object DegreePlanAutofill {
         degreePlans: List<DegreePlan>,
         schedulePlans: List<SchedulePlan>,
         excludingPlanID: String? = null,
-        alreadyInPlan: Set<CourseKey> = emptySet(),
+        alreadyInPlan: Collection<CourseKey> = emptySet(),
         index: CatalogIndex? = null,
+        alreadyCRNs: List<String?>? = null,
     ): List<ScheduleAutofillSuggestion> {
         val target = monthIndex(term)
         val exact = mutableListOf<ScheduleAutofillSuggestion>()
         val closest = mutableListOf<ScheduleAutofillSuggestion>()
-        fun split(keys: List<CourseKey>): Pair<List<CourseKey>, List<CourseKey>> {
-            if (index == null || index.term.code != term.code) return keys to emptyList()
-            val offered = mutableListOf<CourseKey>()
+        fun openSlots(): ArrayDeque<Pair<CourseKey, String?>> {
+            val slots = ArrayDeque<Pair<CourseKey, String?>>()
+            val keys = alreadyInPlan.toList()
+            if (alreadyCRNs != null && alreadyCRNs.size == keys.size) {
+                keys.forEachIndexed { i, key -> slots.add(key to alreadyCRNs[i]?.trim()?.takeIf { it.isNotEmpty() }) }
+            } else {
+                keys.forEach { slots.add(it to null) }
+            }
+            return slots
+        }
+        fun claim(slots: ArrayDeque<Pair<CourseKey, String?>>, key: CourseKey, crn: String?): Boolean {
+            val at = slots.indexOfFirst { it.first == key && it.second == crn }
+            if (at < 0) return false
+            slots.removeAt(at)
+            return true
+        }
+        fun split(rows: List<Pair<CourseKey, String?>>): Pair<List<Pair<CourseKey, String?>>, List<CourseKey>> {
+            if (index == null || index.term.code != term.code) return rows to emptyList()
+            val offered = mutableListOf<Pair<CourseKey, String?>>()
             val unavailable = mutableListOf<CourseKey>()
-            for (key in keys) if (index.sections(key).isEmpty()) unavailable += key else offered += key
+            for (row in rows) {
+                if (index.sections(row.first).isEmpty()) unavailable += row.first else offered += row
+            }
             return offered to unavailable
         }
         val ordered = degreePlans.sortedWith(compareBy<DegreePlan> { if (it.isPrimary) 0 else 1 }.thenByDescending { it.updatedAt })
         for (plan in ordered) {
-            val done = plan.completedKeys
             val candidates = plan.terms.mapNotNull { planTerm ->
-                val seen = HashSet<CourseKey>()
-                val keys = planTerm.courses.mapNotNull { it.key }.filter { it !in done && it !in alreadyInPlan && seen.add(it) }
-                if (keys.isEmpty()) null else Triple(planTerm, keys, abs(planTerm.monthIndex - target))
+                val slots = openSlots()
+                val rows = mutableListOf<Pair<CourseKey, String?>>()
+                for (course in planTerm.courses) {
+                    val key = course.key ?: continue
+                    if (claim(slots, key, course.manualCRN)) continue
+                    rows += key to course.manualCRN
+                }
+                if (rows.isEmpty()) null else Triple(planTerm, rows, abs(planTerm.monthIndex - target))
             }
-            val best = candidates.minWithOrNull(compareBy<Triple<DegreePlanTerm, List<CourseKey>, Int>> { it.third }.thenByDescending { it.first.sortKey }) ?: continue
+            val best = candidates.minWithOrNull(
+                compareBy<Triple<DegreePlanTerm, List<Pair<CourseKey, String?>>, Int>> { it.third }.thenByDescending { it.first.sortKey },
+            ) ?: continue
             val (offered, unavailable) = split(best.second)
             if (offered.isEmpty() && unavailable.isEmpty()) continue
             val isExact = best.first.matches(term)
@@ -442,8 +505,9 @@ object DegreePlanAutofill {
                 "From “${plan.name}” · ${best.first.shortName}",
                 if (isExact) "Your plan for this term" else if (best.third == 0) "Planned for this time" else "Closest semester you planned",
                 isExact,
-                offered,
+                offered.map { it.first },
                 unavailable,
+                offered.map { it.second },
             )
             if (isExact) exact += suggestion else closest += suggestion
         }
@@ -452,13 +516,14 @@ object DegreePlanAutofill {
             .sortedByDescending { it.updatedAt }
             .take(2)
             .mapNotNull { plan ->
-                val keys = plan.courses.map { it.key }.filter { it !in alreadyInPlan }
-                if (keys.isEmpty()) null
+                val slots = openSlots()
+                val rows = plan.courses.map { it.key to it.manualCRN }.filter { (key, crn) -> !claim(slots, key, crn) }
+                if (rows.isEmpty()) null
                 else ScheduleAutofillSuggestion(
                     ScheduleAutofillSuggestion.Source.Schedule(plan.id),
                     plan.name, null, "Copy “${plan.name}”",
                     if (plan.isPrimary) "Your schedule for this term" else "Another schedule for this term",
-                    true, keys, emptyList(),
+                    true, rows.map { it.first }, emptyList(), rows.map { it.second },
                 )
             }
         return exact + copies + closest
@@ -489,7 +554,7 @@ object DegreePlanAutofill {
                 },
             )
         }
-        val done = draft.completedKeys
+        val doneOpen = draft.completed.map { it.key to it.manualCRN }.toMutableList()
         for (plan in schedulePlans) {
             if (!plan.isPrimary || plan.courses.isEmpty()) continue
             val window = TermCalendar.window(plan.termCode)
@@ -503,15 +568,27 @@ object DegreePlanAutofill {
                 terms += DegreePlanTerm(season = season, year = term.calendarYear)
                 terms.lastIndex
             }
-            val present = terms[position].courses.mapNotNull { it.key }.toSet()
-            val added = terms[position].courses.toMutableList()
+            val present = terms[position].courses
+            val open = present.map { it.key to it.manualCRN }.toMutableList()
+            val added = present.toMutableList()
             for (planCourse in plan.courses) {
-                if (planCourse.key in present || planCourse.key in done) continue
+                val crn = planCourse.manualCRN
+                val inTerm = open.indexOfFirst { it.first == planCourse.key && it.second == crn }
+                if (inTerm >= 0) {
+                    open.removeAt(inTerm)
+                    continue
+                }
+                val finished = doneOpen.indexOfFirst { it.first == planCourse.key && it.second == crn }
+                if (finished >= 0) {
+                    doneOpen.removeAt(finished)
+                    continue
+                }
                 val course: Course? = index?.course(planCourse.key)
                 added += DegreePlanCourse.of(
                     planCourse.key,
                     DegreePlanFormat.exportTitle(course?.title ?: planCourse.key.description),
                     course?.maxCredits ?: 4.0,
+                    crn = crn,
                 )
             }
             terms[position] = terms[position].copy(courses = added)

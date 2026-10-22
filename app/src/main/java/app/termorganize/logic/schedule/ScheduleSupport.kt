@@ -18,6 +18,7 @@ import app.termorganize.logic.degree.DegreePlanTerm
 import app.termorganize.logic.degree.PlanCourse
 import app.termorganize.logic.degree.PrerequisiteLookup
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
+import app.termorganize.logic.degree.ScheduleCourseSync
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserDataStore
 import app.termorganize.logic.degree.DegreePlanAutofill
@@ -767,8 +768,9 @@ object ScheduleAutofillSupport {
             degreePlans,
             schedulePlans,
             plan.id,
-            plan.courses.map { it.key }.toSet(),
+            plan.courses.map { it.key },
             index,
+            plan.courses.map { it.manualCRN },
         )
     }
 
@@ -845,9 +847,11 @@ object SchedulePlanActions {
     }
 
     fun addAutofill(suggestion: ScheduleAutofillSuggestion, planId: String, userData: UserDataStore): List<CourseKey> {
-        val added = ArrayList<CourseKey>()
-        for (key in suggestion.courses) if (userData.addCourse(key, planId, required = true)) added += key
-        return added
+        val before = userData.plan(planId) ?: return emptyList()
+        val merged = ScheduleCourseSync.merge(before, suggestion.syncedRows())
+        if (merged === before) return emptyList()
+        userData.updatePlan(planId) { merged }
+        return merged.courses.drop(before.courses.size).map { it.key }
     }
 
     fun undoAutofill(keys: List<CourseKey>, planId: String, index: CatalogIndex?, userData: UserDataStore) {

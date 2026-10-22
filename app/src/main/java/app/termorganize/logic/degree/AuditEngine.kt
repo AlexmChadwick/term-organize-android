@@ -105,16 +105,17 @@ internal class AuditEngine(
                 order++
                 return
             }
-            var use = DegreeAudit.CourseUse(key, course.title, course.credits, semester, order, crn = course.crn)
-            val earlier = instances[key].orEmpty().mapNotNull { pool[it] }
-            val repeated = earlier.firstOrNull { !DegreeCourseRepeats.countsSeparately(use, it) }
-            if (repeated != null) {
-                val better = if (repeated.isCompleted == use.isCompleted) use.credits > repeated.credits else use.isCompleted
-                if (better) pool[repeated.id] = use.copy(instance = repeated.instance)
-                order++
-                return
-            }
-            use = use.copy(instance = earlier.size)
+            val earlier = instances[key].orEmpty().size
+            val use = DegreeAudit.CourseUse(
+                key,
+                course.title,
+                course.credits,
+                semester,
+                order,
+                instance = earlier,
+                crn = course.crn,
+                rowId = course.id,
+            )
             pool[use.id] = use
             instances.getOrPut(key) { mutableListOf() }.add(use.id)
             order++
@@ -251,12 +252,12 @@ internal class AuditEngine(
         for (rule in rules) {
             if (effective[rule.id] !is Effective.Kind) continue
             for (substitution in substitutionsByRule[rule.id].orEmpty()) {
-                val key = (substitution.change as? SubstitutionChange.CountCourse)?.key ?: continue
-                val taken = standIn(key) ?: run {
+                val change = substitution.change as? SubstitutionChange.CountCourse ?: continue
+                val taken = rowFor(change) ?: run {
                     unmatched += substitution
                     continue
                 }
-                consume(taken, rule.id, bySubstitution = true, satisfying = key)
+                consume(taken, rule.id, bySubstitution = true, satisfying = change.key)
                 optionsCounted[rule.id] = (optionsCounted[rule.id] ?: 0) + 1
             }
         }
@@ -474,6 +475,14 @@ internal class AuditEngine(
         )
         available.remove(id)
         used.getOrPut(ruleID) { mutableListOf() }.add(use)
+    }
+
+    /** A substitution that names a row uses that row only. One that does not takes the next free copy. */
+    private fun rowFor(change: SubstitutionChange.CountCourse): String? {
+        val row = change.rowId ?: return standIn(change.key)
+        return instances[change.key].orEmpty().firstOrNull { id ->
+            id in available && pool[id]?.rowId == row
+        }
     }
 
     private fun standIn(required: CourseKey, claimed: Set<String> = emptySet()): String? {

@@ -24,7 +24,13 @@ sealed class PrerequisiteLookup {
  * add a semester. Pure function of the plan.
  */
 object DegreePlanReordering {
-    data class Move(val course: CourseKey, val from: String, val to: String, val crn: String? = null)
+    data class Move(
+        val course: CourseKey,
+        val from: String,
+        val to: String,
+        val crn: String? = null,
+        val courseId: String? = null,
+    )
 
     data class Suggestion(
         val id: String,
@@ -69,12 +75,7 @@ object DegreePlanReordering {
         val seen = HashSet<String>()
         for ((order, key) in blocking.withIndex()) {
             val matches = sorted.terms[origin].courses.filter { it.key == key }
-            val rows = if (
-                matches.size > 1 &&
-                matches.all { it.manualCRN != null } &&
-                matches.map { it.manualCRN }.distinct().size == matches.size
-            ) matches else matches.take(1)
-            for (course in rows) {
+            for (course in matches) {
                 if (!seen.add(course.id)) continue
                 candidates += engine.candidates(course, order, blocking.toSet())
             }
@@ -94,20 +95,30 @@ object DegreePlanReordering {
             else updated = updated.copy(terms = updated.terms + semester).sorted()
         }
         for (move in suggestion.moves) {
-            updated = performMove(move.course, move.from, semesterId[move.to] ?: move.to, updated, move.crn) ?: return plan
+            updated = performMove(move.course, move.from, semesterId[move.to] ?: move.to, updated, move.crn, move.courseId) ?: return plan
         }
         return updated
     }
 
-    private fun performMove(course: CourseKey, from: String, to: String, plan: DegreePlan, crn: String? = null): DegreePlan? {
+    private fun performMove(
+        course: CourseKey,
+        from: String,
+        to: String,
+        plan: DegreePlan,
+        crn: String? = null,
+        courseId: String? = null,
+    ): DegreePlan? {
         val terms = plan.terms.toMutableList()
         val source = terms.indexOfFirst { it.id == from }
         val target = terms.indexOfFirst { it.id == to }
         if (source < 0 || target < 0) return null
         val sourceCourses = terms[source].courses.toMutableList()
         val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
-        val position = if (manual == null) sourceCourses.indexOfFirst { it.key == course }
-        else sourceCourses.indexOfFirst { it.key == course && it.manualCRN == manual }
+        val position = when {
+            courseId != null -> sourceCourses.indexOfFirst { it.id == courseId }
+            manual != null -> sourceCourses.indexOfFirst { it.key == course && it.manualCRN == manual }
+            else -> sourceCourses.indexOfFirst { it.key == course }
+        }
         if (position < 0) return null
         val moved = sourceCourses.removeAt(position)
         terms[source] = terms[source].copy(courses = sourceCourses)
@@ -222,6 +233,18 @@ object DegreePlanReordering {
             return "-$pin"
         }
 
+        /** Set only when another row has the same course number, so a move names that row and no other. */
+        private fun courseIdFor(course: DegreePlanCourse, key: CourseKey): String? {
+            val copies = plan.terms.sumOf { term -> term.courses.count { it.key == key } }
+            return course.id.takeIf { copies > 1 }
+        }
+
+        private fun moveFor(course: DegreePlanCourse, key: CourseKey, from: String, to: String) =
+            Move(key, from, to, course.crn, courseIdFor(course, key))
+
+        private fun identity(course: DegreePlanCourse, key: CourseKey): String =
+            courseIdFor(course, key) ?: "${key.description}${pinSuffix(course.crn)}"
+
         /** 1 when the history can't say; null when it says the course isn't taught then. */
         private fun uncertainty(key: CourseKey, season: PlanSeason): Int? = when (history.isLikelyOffered(key, season)) {
             false -> null
@@ -265,8 +288,8 @@ object DegreePlanReordering {
             val offering = uncertainty(key, semester.season) ?: return null
             val total = semester.credits + course.credits
             if (total > maxCredits) return null
-            val move = Move(key, plan.terms[origin].id, semester.id, course.crn)
-            val changed = performMove(key, move.from, move.to, plan, move.crn) ?: return null
+            val move = moveFor(course, key, plan.terms[origin].id, semester.id)
+            val changed = performMove(key, move.from, move.to, plan, move.crn, move.courseId) ?: return null
             val after = checksAfter(changed, setOf(course.id)) ?: return null
             val check = after[course.id] ?: Check.UNKNOWN
             val label = courseLabel(course, key)
@@ -276,7 +299,7 @@ object DegreePlanReordering {
                 "${semester.shortName} would have ${creditsLabel(total)}",
             )
             val suggestion = Suggestion(
-                "move-${key.description}${pinSuffix(course.crn)}-${move.to}",
+                "move-${identity(course, key)}-${move.to}",
                 listOf(move),
                 "Move $label to ${semester.shortName}",
                 reasons,
@@ -301,11 +324,11 @@ object DegreePlanReordering {
             val newTarget = semester.credits - partner.credits + course.credits
             if (newHome > maxOf(maxCredits, home.credits) || newTarget > maxOf(maxCredits, semester.credits)) return null
             val moves = listOf(
-                Move(key, home.id, semester.id, course.crn),
-                Move(partnerKey, semester.id, home.id, partner.crn),
+                moveFor(course, key, home.id, semester.id),
+                moveFor(partner, partnerKey, semester.id, home.id),
             )
             var changed = plan
-            for (move in moves) changed = performMove(move.course, move.from, move.to, changed, move.crn) ?: return null
+            for (move in moves) changed = performMove(move.course, move.from, move.to, changed, move.crn, move.courseId) ?: return null
             val after = checksAfter(changed, setOf(course.id, partner.id)) ?: return null
             val courseCheck = after[course.id] ?: Check.UNKNOWN
             val partnerCheck = after[partner.id] ?: Check.UNKNOWN
@@ -318,7 +341,7 @@ object DegreePlanReordering {
                 "${semester.shortName} would have ${creditsLabel(newTarget)}",
             )
             val suggestion = Suggestion(
-                "swap-${key.description}${pinSuffix(course.crn)}-${semester.id}-${partnerKey.description}${pinSuffix(partner.crn)}",
+                "swap-${identity(course, key)}-${semester.id}-${identity(partner, partnerKey)}",
                 moves,
                 "Move ${courseLabel(course, key)} to ${semester.shortName} and ${courseLabel(partner, partnerKey)} to ${home.shortName}",
                 reasons,
@@ -341,8 +364,8 @@ object DegreePlanReordering {
                     year = upcoming.year,
                 )
                 var changed = plan.copy(terms = plan.terms + semester).sorted()
-                val move = Move(key, home.id, semester.id, course.crn)
-                changed = performMove(key, move.from, move.to, changed, move.crn) ?: continue
+                val move = moveFor(course, key, home.id, semester.id)
+                changed = performMove(key, move.from, move.to, changed, move.crn, move.courseId) ?: continue
                 val after = checksAfter(changed, setOf(course.id)) ?: continue
                 val check = after[course.id] ?: Check.UNKNOWN
                 val reasons = listOf(
@@ -351,7 +374,7 @@ object DegreePlanReordering {
                     "Adds ${semester.shortName} to your plan, with ${creditsLabel(course.credits)}",
                 )
                 val suggestion = Suggestion(
-                    "move-${key.description}${pinSuffix(course.crn)}-${semester.id}",
+                    "move-${identity(course, key)}-${semester.id}",
                     listOf(move),
                     "Move ${courseLabel(course, key)} to a new ${semester.shortName} semester",
                     reasons,

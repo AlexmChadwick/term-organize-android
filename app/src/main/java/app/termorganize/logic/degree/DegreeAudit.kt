@@ -120,6 +120,8 @@ object DegreeAudit {
         val satisfies: CourseKey? = null,
         val instance: Int = 0,
         val crn: String? = null,
+        /** Degree-plan row this use came from. Assignments and substitutions follow this id. */
+        val rowId: String? = null,
     ) {
         val id: String get() = if (instance == 0) key.description else "${key.description} (${instance + 1})"
         val isCompleted: Boolean get() = semester == null

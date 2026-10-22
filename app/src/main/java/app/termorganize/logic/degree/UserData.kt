@@ -187,7 +187,7 @@ data class DegreePlanCourse(
     val label: String = "",
     val title: String = "",
     val credits: Double = 0.0,
-    /** Manually chosen section. Two entries may share a course number only when both CRNs are set and different. */
+    /** Optional manually chosen section. A repeated course number does not need one. */
     val crn: String? = null,
 ) {
     val manualCRN: String? get() = crn?.trim()?.takeIf { it.isNotEmpty() }
@@ -292,7 +292,7 @@ sealed class CourseNumberLimit {
 @Serializable
 sealed class SubstitutionChange {
     @Serializable
-    data class CountCourse(val key: CourseKey) : SubstitutionChange()
+    data class CountCourse(val key: CourseKey, val rowId: String? = null) : SubstitutionChange()
     @Serializable
     data class Replace(val replacement: RequirementReplacement) : SubstitutionChange()
     @Serializable
@@ -333,22 +333,13 @@ data class DegreePlan(
 ) {
     val completedCredits: Double get() = completed.sumOf { it.credits }
     val plannedCredits: Double get() = terms.sumOf { it.credits }
-    private val everyCourse: List<DegreePlanCourse> get() = completed + terms.flatMap { it.courses }
 
     /**
-     * Same subject and number twice is allowed only when every matching entry, including this one,
-     * has its own manual CRN. The same CRN is never added twice. Entries with no CRN keep the
-     * previous behavior: they can repeat, and the audit decides whether the repeat counts.
+     * A course already in the plan can be added again, with or without a CRN.
+     * Each row keeps its own id. Repeats are warned and still count; saving is never blocked.
+     * Schedule plans keep the separate pinned-CRN rule in [SchedulePlan.admitsCourse].
      */
-    fun admits(course: DegreePlanCourse): Boolean {
-        val crn = course.manualCRN
-        if (crn != null && everyCourse.any { it.manualCRN == crn }) return false
-        val key = course.key ?: return true
-        val same = everyCourse.filter { it.key == key }
-        if (crn != null && same.any { it.manualCRN == null }) return false
-        if (crn == null && same.any { it.manualCRN != null }) return false
-        return true
-    }
+    fun admits(@Suppress("UNUSED_PARAMETER") course: DegreePlanCourse): Boolean = true
     val completedKeys: Set<CourseKey> get() = completed.mapNotNull { it.key }.toSet()
     fun sorted(): DegreePlan = copy(terms = terms.sortedBy { it.sortKey })
     fun termMatching(term: Term): DegreePlanTerm? = terms.firstOrNull { it.matches(term) }
@@ -547,15 +538,16 @@ class UserDataStore(var data: UserData = UserData()) {
     }
 
     fun scheduleForDegreePlan(semester: DegreePlanTerm, termCode: String): ScheduleFromDegree? {
-        val seen = LinkedHashSet<CourseKey>()
-        val keys = semester.courses.mapNotNull { it.key }.filter { seen.add(it) }
-        if (keys.isEmpty()) return null
-        val existing = plansIn(termCode).firstOrNull { it.courses.map { course -> course.key }.toSet() == keys.toSet() }
-        if (existing != null) return ScheduleFromDegree(existing, false, keys.size)
+        val rows = semester.courses.mapNotNull { course -> course.key?.let { it to course.manualCRN } }
+        if (rows.isEmpty()) return null
+        val existing = plansIn(termCode).firstOrNull { plan ->
+            plan.courses.map { it.key to it.manualCRN } == rows
+        }
+        if (existing != null) return ScheduleFromDegree(existing, false, rows.size)
         val created = createPlan(DegreePlanEditing.scheduleName(semester, plansIn(termCode).map { it.name }), termCode)
-        for (key in keys) addCourse(key, created.id)
+        updatePlan(created.id) { ScheduleCourseSync.merge(it, rows) }
         val stored = plans.first { it.id == created.id }
-        return ScheduleFromDegree(stored, true, keys.size)
+        return ScheduleFromDegree(stored, true, rows.size)
     }
 
     fun duplicatePlan(id: String): SchedulePlan? {

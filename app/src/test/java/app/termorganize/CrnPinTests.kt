@@ -43,6 +43,7 @@ import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.search.CatalogIndex
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -226,15 +227,15 @@ class CrnPinTests {
         val first = degreeCourse(key, "Seminar", "11111")
         val second = degreeCourse(key, "Seminar", "33333")
         val plan = DegreePlan(name = "Topics", terms = listOf(DegreePlanTerm(season = PlanSeason.FALL, year = 2026, courses = listOf(first, second))))
-        assertFalse(plan.admits(degreeCourse(key, "Seminar", null)))
+        assertTrue(plan.admits(degreeCourse(key, "Seminar", null)))
         val open = DegreePlan(name = "Open", completed = listOf(degreeCourse(key, "Seminar", null)))
         assertTrue(open.admits(degreeCourse(key, "Seminar", null)))
-        assertFalse(plan.admits(degreeCourse(key, "Seminar", "11111")))
-        assertFalse(plan.admits(degreeCourse(key, "Other", "11111")))
+        assertTrue(plan.admits(degreeCourse(key, "Seminar", "11111")))
+        assertTrue(plan.admits(degreeCourse(key, "Other", "11111")))
         assertTrue(plan.admits(degreeCourse(key, "Seminar", "44444")))
         assertFalse(DegreeCourseRepeats.countsSeparately(first, first.copy(id = "other", crn = "11111")))
         assertTrue(DegreeCourseRepeats.countsSeparately(first, second))
-        assertEquals(emptySet<CourseKey>(), DegreePlanAnalysis.duplicateKeys(plan))
+        assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(plan))
         assertEquals(8.0, DegreeAudit.run(plan, requirements()).plannedHours, 0.0)
         val completed = DegreePlan(name = "Done", completed = listOf(first, second))
         assertEquals(8.0, DegreeAudit.run(completed, requirements()).completedHours, 0.0)
@@ -242,7 +243,7 @@ class CrnPinTests {
             name = "Same",
             completed = listOf(first, first.copy(id = "copy", crn = "11111")),
         )
-        assertEquals(4.0, DegreeAudit.run(sameCrn, requirements()).completedHours, 0.0)
+        assertEquals(8.0, DegreeAudit.run(sameCrn, requirements()).completedHours, 0.0)
         val unpinned = DegreePlan(
             name = "Unpinned",
             terms = listOf(
@@ -254,7 +255,7 @@ class CrnPinTests {
             ),
         )
         assertEquals(setOf(key), DegreePlanAnalysis.duplicateKeys(unpinned))
-        assertEquals(4.0, DegreeAudit.run(unpinned, requirements()).plannedHours, 0.0)
+        assertEquals(8.0, DegreeAudit.run(unpinned, requirements()).plannedHours, 0.0)
     }
 
     @Test fun nupathCountsEachPinnedEntry() {
@@ -310,8 +311,10 @@ class CrnPinTests {
             DegreePlanAnalysis.prerequisiteStatus(topics, 0, plan, catalog)::class,
         )
         assertEquals(DegreePlanAnalysis.PrerequisiteStatus.Met, DegreePlanAnalysis.prerequisiteStatus(later, 1, plan, catalog))
-        val blocked = DegreePlanEditing.add(degreeCourse(topics, "Seminar", null), "fall", plan)
-        assertEquals(2, blocked.terms[0].courses.size)
+        val added = DegreePlanEditing.add(degreeCourse(topics, "Seminar", null), "fall", plan)
+        assertEquals(3, added.terms[0].courses.size)
+        assertEquals(listOf("11111", "33333"), added.terms[0].courses.take(2).map { it.crn })
+        assertNull(added.terms[0].courses[2].crn)
     }
 
     @Test fun reorderingMovesThePinnedEntryRatherThanTheFirstCourseOfThatNumber() {

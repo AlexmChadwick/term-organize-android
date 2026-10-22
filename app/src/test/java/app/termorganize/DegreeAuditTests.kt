@@ -211,14 +211,15 @@ class DegreeAuditTests {
         assertEquals(listOf("CS 4535"), engineering.used.map { it.key.description })
         val electiveResult = audit.result(electives.id)!!
         assertEquals(DegreeAudit.Status.PLANNED, electiveResult.status)
-        assertEquals(setOf("DS 3000", "CS 4410"), electiveResult.used.map { it.key.description }.toSet())
+        assertEquals(setOf("CS 3000", "CS 3800"), electiveResult.used.map { it.key.description }.toSet())
         val scienceResult = audit.result(science.id)!!
         assertEquals(DegreeAudit.Status.PLANNED, scienceResult.status)
-        assertEquals(setOf("CS 3800", "CS 4100"), scienceResult.used.map { it.key.description }.toSet())
+        assertEquals(setOf("CS 4100", "DS 3000"), scienceResult.used.map { it.key.description }.toSet())
         assertEquals("Petition approved", scienceResult.substitutions.first().note)
         assertEquals(setOf("CS 4400", "Electives"), audit.unmatchedSubstitutions.map { it.ruleTitle }.toSet())
-        val counted = audit.ruleResults.flatMap { result -> result.used.map { it.key } }
-        assertEquals(counted.size, counted.toSet().size)
+        val counted = audit.ruleResults.flatMap { it.used }
+        assertEquals(counted.size, counted.map { it.rowId ?: it.id }.toSet().size)
+        assertEquals(2, counted.count { it.key == CourseKey("CS", "3000") })
     }
 
     @Test fun shortfallLandsOnTheHoursRequirement() {
@@ -393,9 +394,9 @@ class DegreeAuditTests {
         assertEquals(DegreeAudit.Status.PLANNED, result.status)
         assertEquals(listOf("CS 4973", "CS 4973 (2)"), result.used.map { it.id }.sorted())
         val counted = audit.ruleResults.flatMap { it.used } + audit.unused
-        assertEquals(1, counted.count { it.key.description == "MKTG 2602" })
+        assertEquals(2, counted.count { it.key.description == "MKTG 2602" })
         assertEquals(counted.size, counted.map { it.id }.toSet().size)
-        assertEquals(setOf(CourseKey("MKTG", "2602")), DegreePlanAnalysis.duplicateKeys(plan))
+        assertEquals(setOf(CourseKey("MKTG", "2602"), CourseKey("CS", "4973")), DegreePlanAnalysis.duplicateKeys(plan))
     }
 
     @Test fun requiredAlternativesMakeRoom() {

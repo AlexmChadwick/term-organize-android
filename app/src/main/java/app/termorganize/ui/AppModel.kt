@@ -59,6 +59,7 @@ import app.termorganize.logic.degree.ProgramCatalogWalker
 import app.termorganize.logic.degree.ProgramRequirements
 import app.termorganize.logic.degree.RequirementSubstitution
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
+import app.termorganize.logic.degree.ScheduleCourseSync
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserData
 import app.termorganize.logic.degree.UserJson
@@ -540,21 +541,19 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun applyAutofill(planId: String, suggestion: ScheduleAutofillSuggestion) {
-        updatePlan(planId) { plan ->
-            val existing = plan.courses.map { it.key }.toSet()
-            var next = plan
-            for (key in suggestion.courses) {
-                if (key in existing) continue
-                next = next.copy(courses = next.courses + PlanCourse(key, colorIndex = next.nextColorIndex))
-            }
-            next
-        }
+        updatePlan(planId) { ScheduleCourseSync.merge(it, suggestion.syncedRows()) }
     }
 
     fun suggestions(plan: SchedulePlan): List<ScheduleAutofillSuggestion> {
         val term = _index.value?.term ?: return emptyList()
         return DegreePlanAutofill.scheduleSuggestions(
-            term, _user.value.degreePlans, _user.value.plans, plan.id, plan.courses.map { it.key }.toSet(), _index.value,
+            term,
+            _user.value.degreePlans,
+            _user.value.plans,
+            plan.id,
+            plan.courses.map { it.key },
+            _index.value,
+            plan.courses.map { it.manualCRN },
         )
     }
 
