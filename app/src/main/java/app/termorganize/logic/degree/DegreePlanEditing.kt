@@ -12,6 +12,7 @@ object DegreePlanEditing {
         plan.copy(terms = plan.terms.map { term -> term.copy(courses = term.courses.filter { it.id != courseId }) })
 
     fun add(course: DegreePlanCourse, termId: String, plan: DegreePlan): DegreePlan {
+        if (!plan.admits(course)) return plan
         val index = plan.terms.indexOfFirst { it.id == termId }
         if (index < 0) return plan
         val terms = plan.terms.toMutableList()

@@ -453,6 +453,10 @@ data class ScheduleCourseInput(
     val excludedCRNs: Set<String> = emptySet(),
     val minCredits: Int = 0,
     val maxCredits: Int = 0,
+    /** The only section is a section the user already chose. Filters must not replace it. */
+    val locked: Boolean = false,
+    /** Set when [locked] is true and that CRN is no longer in the catalog. Sections stay empty. */
+    val unavailableCRN: String? = null,
 ) {
     companion object
 }
@@ -534,6 +538,7 @@ data class ScheduleDiagnostics(
         val totalSections: Int,
         val remainingSections: Int,
         val rejections: Map<ScheduleFilterReason, Int>,
+        val unavailableCRN: String? = null,
     ) {
         val isBlocked get() = remainingSections == 0
     }
@@ -757,7 +762,9 @@ object ScheduleGenerator {
         val out = mutableListOf<String>()
         courses.forEachIndexed { i, course ->
             if (course.isRequired && kept.getOrNull(i)?.isEmpty() == true) {
-                out += "${course.key.description} has no section that fits the current constraints."
+                val pin = course.unavailableCRN
+                out += if (pin == null) "${course.key.description} has no section that fits the current constraints."
+                else "CRN $pin is unavailable"
             }
         }
         if (filters.earliestStart != null) out += "Try an earlier start than ${TimeOfDay.label(filters.earliestStart)}."

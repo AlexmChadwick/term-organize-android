@@ -27,8 +27,10 @@ import app.termorganize.core.model.CourseInfo
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.HONORS_ATTRIBUTE_CODE
 import app.termorganize.core.model.CourseSection
+import app.termorganize.core.model.CpsRestriction
 import app.termorganize.core.model.DaySet
 import app.termorganize.core.model.Requisite
+import app.termorganize.core.model.VariableCredits
 import app.termorganize.core.model.Term
 import app.termorganize.core.model.TermCatalog
 import app.termorganize.core.model.TermMenu
@@ -39,6 +41,7 @@ import app.termorganize.data.WidgetFiles
 import app.termorganize.logic.degree.CatalogProgram
 import app.termorganize.logic.degree.CatalogYear
 import app.termorganize.logic.degree.CourseEquivalence
+import app.termorganize.logic.degree.CreditSync
 import app.termorganize.logic.degree.DegreeCourseAttributes
 import app.termorganize.logic.degree.DegreePlan
 import app.termorganize.logic.degree.DegreePlanAnalysis
@@ -59,6 +62,7 @@ import app.termorganize.logic.degree.ProgramCatalogWalker
 import app.termorganize.logic.degree.ProgramRequirements
 import app.termorganize.logic.degree.RequirementSubstitution
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
+import app.termorganize.logic.degree.ScheduleCourseSync
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserData
 import app.termorganize.logic.degree.UserJson
@@ -168,6 +172,13 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun adopt(catalog: TermCatalog) {
+        val clamped = CreditSync.clampSaved(_user.value, catalog)
+        if (clamped !== _user.value) {
+            _user.value = clamped
+            viewModelScope.launch(Dispatchers.IO) {
+                dao.upsert(UserRow(json = UserJson.encode(clamped)))
+            }
+        }
         _index.value = CatalogIndex.build(catalog)
         _status.value = ""
         _syncLabel.value = ""
@@ -404,25 +415,85 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         return plan
     }
 
-    fun addToPlan(key: CourseKey) {
+    fun addToPlan(key: CourseKey, crn: String? = null) {
         val plan = ensurePlan()
-        if (plan.contains(key)) return
-        val course = PlanCourse(key, colorIndex = plan.nextColorIndex)
-        update { data -> data.copy(plans = data.plans.map { if (it.id == plan.id) it.copy(courses = it.courses + course) else it }) }
+        if (!plan.admitsCourse(key, crn)) return
+        val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
+        val course = seededPlanCourse(key, plan.nextColorIndex, manual)
+        update { data ->
+            data.copy(plans = data.plans.map { current ->
+                if (current.id != plan.id) current
+                else current.copy(
+                    courses = current.courses + course,
+                    selectedCRNs = if (manual == null || manual in current.selectedCRNs) current.selectedCRNs else current.selectedCRNs + manual,
+                )
+            })
+        }
     }
 
     fun toggleCrn(planId: String, crn: String) {
+        val key = _index.value?.section(crn)?.courseKey
         update { data ->
             data.copy(plans = data.plans.map { plan ->
-                if (plan.id != planId) plan
-                else {
-                    val selected = if (crn in plan.selectedCRNs) plan.selectedCRNs - crn else plan.selectedCRNs + crn
-                    plan.copy(selectedCRNs = selected)
-                }
+                if (plan.id != planId) plan else toggleSection(plan, crn, key)
             })
         }
         publishWidget()
     }
+
+    private fun toggleSection(plan: SchedulePlan, crn: String, key: CourseKey?): SchedulePlan {
+        val selected = crn in plan.selectedCRNs || plan.courses.any { it.manualCRN == crn }
+        if (selected) {
+            val cleared = plan.courses.map { if (it.manualCRN == crn) it.copy(crn = null) else it }
+            return plan.copy(courses = collapseUnpinned(cleared), selectedCRNs = plan.selectedCRNs.filter { it != crn })
+        }
+        if (key == null) return plan.copy(selectedCRNs = if (crn in plan.selectedCRNs) plan.selectedCRNs else plan.selectedCRNs + crn)
+        val open = plan.courses.indexOfFirst { it.key == key && it.manualCRN == null }
+        if (open >= 0) {
+            val courses = plan.courses.toMutableList()
+            courses[open] = courses[open].copy(crn = crn)
+            return plan.copy(courses = courses, selectedCRNs = plan.selectedCRNs + crn)
+        }
+        if (plan.courses.any { it.key == key }) {
+            if (!plan.admitsCourse(key, crn)) return plan
+            return plan.copy(
+                courses = plan.courses + seededPlanCourse(key, plan.nextColorIndex, crn),
+                selectedCRNs = plan.selectedCRNs + crn,
+            )
+        }
+        return plan.copy(selectedCRNs = plan.selectedCRNs + crn)
+    }
+
+    /** A variable-credit course starts at Banner's default. A fixed course stores no choice. */
+    private fun seededPlanCourse(key: CourseKey, colorIndex: Int, crn: String?): PlanCourse {
+        val listed = _index.value?.course(key)
+        val seeded = VariableCredits.seed(listed, listed?.minCredits ?: 0.0)
+        val variable = listed?.isVariableCredit == true
+        return PlanCourse(
+            key,
+            colorIndex = colorIndex,
+            crn = crn,
+            credits = if (variable) seeded.credits else null,
+            creditLow = if (variable) seeded.low else null,
+            creditHigh = if (variable) seeded.high else null,
+        )
+    }
+
+    fun setDegreeCredits(planId: String, courseId: String, credits: Double) {
+        update { CreditSync.setDegreeCredits(it, planId, courseId, credits) }
+    }
+
+    fun setScheduleCredits(planId: String, index: Int, credits: Double) {
+        update { CreditSync.setScheduleCredits(it, planId, index, credits) }
+        publishWidget()
+    }
+
+    private fun collapseUnpinned(courses: List<PlanCourse>): List<PlanCourse> =
+        courses.filter { course ->
+            if (course.manualCRN != null) true
+            else courses.none { it.key == course.key && it.manualCRN != null } &&
+                courses.indexOfFirst { it.key == course.key && it.manualCRN == null } == courses.indexOf(course)
+        }
 
     fun generate(plan: SchedulePlan): ScheduleGenerationResult {
         val index = _index.value ?: return ScheduleGenerationResult()
@@ -488,13 +559,18 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         update { it.copy(plans = it.plans + copy) }
     }
 
-    fun removeCourse(planId: String, key: CourseKey) {
+    fun removeCourse(planId: String, key: CourseKey, crn: String? = null) {
         updatePlan(planId) { plan ->
-            val crns = _index.value?.sections(key)?.map { it.crn }?.toSet().orEmpty()
+            val manual = crn?.trim()?.takeIf { it.isNotEmpty() }
+            val removing = plan.courses.filter { it.key == key && (manual == null || it.manualCRN == manual) }
+            val kept = plan.courses.filter { it !in removing }
+            val protected = kept.mapNotNull { it.manualCRN }.toSet()
+            val catalog = if (manual == null) _index.value?.sections(key)?.map { it.crn }?.toSet().orEmpty() else emptySet()
+            val drop = removing.mapNotNull { it.manualCRN }.toSet() + catalog
             plan.copy(
-                courses = plan.courses.filter { it.key != key },
-                selectedCRNs = plan.selectedCRNs.filter { it !in crns },
-                favoriteCombinations = plan.favoriteCombinations.filter { combo -> combo.none { it in crns } },
+                courses = kept,
+                selectedCRNs = plan.selectedCRNs.filter { it !in drop || it in protected },
+                favoriteCombinations = plan.favoriteCombinations.filter { combo -> combo.none { it in drop && it !in protected } },
             )
         }
     }
@@ -517,24 +593,24 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun setFilters(planId: String, filters: ScheduleFilters) = updatePlan(planId) { it.copy(filters = filters) }
 
-    fun selectCombination(planId: String, crns: List<String>) = updatePlan(planId) { it.copy(selectedCRNs = crns) }
+    fun selectCombination(planId: String, crns: List<String>) = updatePlan(planId) { plan ->
+        PlanEditing.applyCombination(crns, plan) { crn -> _index.value?.section(crn)?.courseKey }
+    }
 
     fun applyAutofill(planId: String, suggestion: ScheduleAutofillSuggestion) {
-        updatePlan(planId) { plan ->
-            val existing = plan.courses.map { it.key }.toSet()
-            var next = plan
-            for (key in suggestion.courses) {
-                if (key in existing) continue
-                next = next.copy(courses = next.courses + PlanCourse(key, colorIndex = next.nextColorIndex))
-            }
-            next
-        }
+        updatePlan(planId) { ScheduleCourseSync.merge(it, suggestion.syncedRows()) }
     }
 
     fun suggestions(plan: SchedulePlan): List<ScheduleAutofillSuggestion> {
         val term = _index.value?.term ?: return emptyList()
         return DegreePlanAutofill.scheduleSuggestions(
-            term, _user.value.degreePlans, _user.value.plans, plan.id, plan.courses.map { it.key }.toSet(), _index.value,
+            term,
+            _user.value.degreePlans,
+            _user.value.plans,
+            plan.id,
+            plan.courses.map { it.key },
+            _index.value,
+            plan.courses.map { it.manualCRN },
         )
     }
 
@@ -579,11 +655,14 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun addCompleted(planId: String, course: DegreePlanCourse) = updateDegree(planId) { it.copy(completed = it.completed + course) }
+    fun addCompleted(planId: String, course: DegreePlanCourse) = updateDegree(planId) { plan ->
+        if (!plan.admits(course)) plan else plan.copy(completed = plan.completed + course)
+    }
 
     fun addPlanned(planId: String, termId: String, course: DegreePlanCourse) {
         updateDegree(planId) { plan ->
-            plan.copy(terms = plan.terms.map { term -> if (term.id == termId) term.copy(courses = term.courses + course) else term })
+            if (!plan.admits(course)) plan
+            else plan.copy(terms = plan.terms.map { term -> if (term.id == termId) term.copy(courses = term.courses + course) else term })
         }
     }
 
@@ -833,19 +912,23 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             if (current.term.code != term) return@launch
             val existing = current.course(key) ?: return@launch
             if (existing.detailsLoaded) return@launch
+            val keepRange = existing.isVariableCredit
             val updated = existing.copy(
                 title = info.title.ifBlank { existing.title },
                 description = info.description.ifBlank { existing.description },
-                minCredits = info.minCredits ?: existing.minCredits,
-                maxCredits = info.maxCredits ?: existing.maxCredits,
+                minCredits = if (keepRange) existing.minCredits else info.minCredits ?: existing.minCredits,
+                maxCredits = if (keepRange) existing.maxCredits else info.maxCredits ?: existing.maxCredits,
+                creditHours = existing.creditHours,
                 prereqs = info.prerequisites ?: existing.prereqs,
                 coreqs = info.corequisites ?: existing.coreqs,
                 college = info.college ?: existing.college,
                 department = info.department ?: existing.department,
                 detailsLoaded = true,
             )
+            val sections = withRestrictions(term, current.sections(key))
             val next = current.catalog.copy(
                 courses = current.catalog.courses.map { if (it.key == key) updated else it },
+                sections = current.catalog.sections.filter { it.courseKey != key } + sections,
             ).recomputePostreqs()
             withContext(Dispatchers.IO) { catalogs.save(next) }
             adopt(next)
@@ -854,15 +937,36 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshCourse(key: CourseKey, onDone: (List<CourseSection>) -> Unit) {
         val term = _index.value?.term?.code ?: return
+        val previous = sections(key)
         viewModelScope.launch {
             val fresh = runCatching {
-                withContext(Dispatchers.IO) { BannerClient().let { client -> try { client.refreshCourse(term, key, sections(key)) } finally { client.close() } } }
+                withContext(Dispatchers.IO) {
+                    BannerClient().let { client ->
+                        try {
+                            val sections = client.refreshCourse(term, key, previous)
+                            CpsRestriction.apply(sections, client.fetchRestrictions(term, sections.map { it.crn }))
+                        } finally {
+                            client.close()
+                        }
+                    }
+                }
             }
             fresh.onSuccess { sections ->
-                _index.value = _index.value?.replacingCourse(key, null, sections)
+                val next = _index.value?.replacingCourse(key, null, sections)?.catalog ?: return@onSuccess
+                withContext(Dispatchers.IO) { catalogs.save(next) }
+                adopt(next)
                 onDone(sections)
             }.onFailure { _error.value = it.message ?: "Couldn’t refresh seats" }
         }
+    }
+
+    private suspend fun withRestrictions(term: String, sections: List<CourseSection>): List<CourseSection> {
+        val missing = sections.filter { it.restrictions == null }.map { it.crn }
+        if (missing.isEmpty()) return sections
+        val found = runCatching {
+            withContext(Dispatchers.IO) { BannerClient.shared { it.fetchRestrictions(term, missing) } }
+        }.getOrDefault(emptyMap())
+        return CpsRestriction.apply(sections, found)
     }
 
     fun exportUser(): Uri = writeShare("term-organize-data.json", UserJson.encode(_user.value).toByteArray(), "application/json")

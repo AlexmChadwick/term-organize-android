@@ -18,6 +18,7 @@ import app.termorganize.logic.degree.DegreePlanTerm
 import app.termorganize.logic.degree.PlanCourse
 import app.termorganize.logic.degree.PrerequisiteLookup
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
+import app.termorganize.logic.degree.ScheduleCourseSync
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserDataStore
 import app.termorganize.logic.degree.DegreePlanAutofill
@@ -41,9 +42,30 @@ object PlanEditing {
     }
 
     fun setSection(crn: String?, courseCRNs: Set<String>, plan: SchedulePlan): SchedulePlan {
-        val selected = plan.selectedCRNs.filter { it !in courseCRNs }.toMutableList()
+        val pins = plan.courses.mapNotNull { it.manualCRN }
+        val replacing = pins.filter { it in courseCRNs }
+        // Several manual sections share this course number. Do not retarget them as a group.
+        if (replacing.size > 1) return plan
+        val selected = plan.selectedCRNs.filter { it !in courseCRNs || (it in pins && it !in replacing) }.toMutableList()
         if (crn != null && crn !in selected) selected += crn
-        return plan.copy(selectedCRNs = selected)
+        val courses = if (replacing.size == 1) {
+            plan.courses.map { if (it.manualCRN == replacing[0]) it.copy(crn = crn) else it }
+        } else plan.courses
+        return plan.copy(courses = courses, selectedCRNs = selected)
+    }
+
+    /** Keeps every manually chosen CRN. A generated section of that course number does not replace it. */
+    fun applyCombination(crns: List<String>, plan: SchedulePlan, keyOf: (String) -> CourseKey?): SchedulePlan {
+        val pins = plan.courses.mapNotNull { it.manualCRN }
+        val kept = crns.filter { crn ->
+            val key = keyOf(crn) ?: return@filter true
+            val pinnedForKey = plan.courses.filter { it.key == key }.mapNotNull { it.manualCRN }
+            pinnedForKey.isEmpty() || crn in pinnedForKey
+        }
+        val merged = LinkedHashSet<String>()
+        merged += kept
+        merged += pins
+        return plan.copy(selectedCRNs = merged.toList())
     }
 
     fun setRequired(isRequired: Boolean, key: CourseKey, plan: SchedulePlan): SchedulePlan {
@@ -91,7 +113,7 @@ object PlanEditing {
     }
 
     fun restore(removal: PlanCourseRemoval, plan: SchedulePlan): SchedulePlan {
-        if (plan.contains(removal.course.key)) return plan
+        if (plan.courses.any { it.key == removal.course.key && it.manualCRN == removal.course.manualCRN }) return plan
         val courses = plan.courses.toMutableList()
         courses.add(removal.index.coerceIn(0, courses.size), removal.course)
         val selected = plan.selectedCRNs.toMutableList()
@@ -211,13 +233,24 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         }
         val built = ArrayList<Entry>()
         val claimed = HashSet<String>()
+        val pinnedElsewhere = plan.courses.mapNotNull { it.manualCRN }.toSet()
         for (planCourse in plan.courses) {
             val all = index?.sections(planCourse.key).orEmpty()
-            val selected = plan.selectedCRNs.mapNotNull { crn ->
-                val section = bySection[crn] ?: return@mapNotNull null
-                if (section.courseKey != planCourse.key) return@mapNotNull null
-                claimed += crn
-                section
+            val pin = planCourse.manualCRN
+            val selected = if (pin != null) {
+                val section = bySection[pin]
+                if (section != null) {
+                    claimed += pin
+                    listOf(section)
+                } else emptyList()
+            } else {
+                plan.selectedCRNs.mapNotNull { crn ->
+                    if (crn in claimed || crn in pinnedElsewhere) return@mapNotNull null
+                    val section = bySection[crn] ?: return@mapNotNull null
+                    if (section.courseKey != planCourse.key) return@mapNotNull null
+                    claimed += crn
+                    section
+                }
             }
             built += Entry(planCourse, index?.course(planCourse.key), all, selected, index != null)
         }
@@ -234,15 +267,18 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         fullSections = full
         conflicts = ScheduleConflicts.find(sections)
         missingCourses = entries.filter { it.isMissing || it.hasNoSections }.map { it.key }
-        var low = 0.0
-        var high = 0.0
+        var total = 0.0
         for (entry in entries) {
             if (!entry.countsTowardsCredits) continue
             val course = entry.course ?: continue
-            low += course.minCredits
-            high += course.maxCredits
+            total += app.termorganize.core.model.VariableCredits.accounted(
+                entry.planCourse.credits,
+                entry.planCourse.creditLow,
+                entry.planCourse.creditHigh,
+                course,
+            )
         }
-        credits = low to high
+        credits = total to total
     }
 
     val creditsLabel: String get() = CreditFormatter.label(credits.first, credits.second)
@@ -376,18 +412,78 @@ object ScheduleNotices {
     }
 }
 
-fun ScheduleCourseInput.Companion.inputs(plan: SchedulePlan, index: CatalogIndex): List<ScheduleCourseInput> =
-    plan.courses.map { planCourse ->
+fun ScheduleCourseInput.Companion.inputs(plan: SchedulePlan, index: CatalogIndex): List<ScheduleCourseInput> {
+    val result = ArrayList<ScheduleCourseInput>()
+    val claimed = HashSet<String>()
+    for (planCourse in plan.courses) {
         val course = index.course(planCourse.key)
-        ScheduleCourseInput(
-            planCourse.key,
-            planCourse.isRequired,
-            index.sections(planCourse.key),
-            planCourse.excludedCRNs,
-            (course?.minCredits ?: 0.0).let { kotlin.math.ceil(it).toInt() },
-            (course?.maxCredits ?: 0.0).let { kotlin.math.ceil(it).toInt() },
-        )
+        val points = if (course == null) 0 else ceil(
+            app.termorganize.core.model.VariableCredits.accounted(
+                planCourse.credits,
+                planCourse.creditLow,
+                planCourse.creditHigh,
+                course,
+            ),
+        ).toInt()
+        val min = points
+        val max = points
+        val manual = planCourse.manualCRN
+        if (manual != null) {
+            claimed += manual
+            result += lockedInput(planCourse, index.section(manual), min, max)
+            continue
+        }
+        val pins = plan.selectedCRNs.filter { it !in claimed }.mapNotNull { crn ->
+            val section = index.section(crn) ?: return@mapNotNull null
+            if (section.courseKey != planCourse.key) return@mapNotNull null
+            if (plan.courses.any { it.manualCRN == crn }) return@mapNotNull null
+            crn
+        }.distinct()
+        if (pins.isEmpty()) {
+            val missing = plan.selectedCRNs.filter { crn ->
+                crn !in claimed && index.section(crn) == null && plan.courses.none { it.manualCRN == crn }
+            }
+            val open = plan.courses.filter { course ->
+                course.manualCRN == null && plan.selectedCRNs.none { crn -> index.section(crn)?.courseKey == course.key }
+            }
+            if (missing.isNotEmpty() && open.size == 1 && open[0].key == planCourse.key) {
+                claimed += missing.first()
+                result += lockedInput(planCourse.copy(crn = missing.first()), null, min, max)
+            } else {
+                result += ScheduleCourseInput(
+                    planCourse.key,
+                    planCourse.isRequired,
+                    index.sections(planCourse.key),
+                    planCourse.excludedCRNs,
+                    min,
+                    max,
+                )
+            }
+        } else {
+            pins.forEachIndexed { offset, crn ->
+                claimed += crn
+                result += lockedInput(
+                    planCourse,
+                    index.section(crn),
+                    if (offset == 0) min else 0,
+                    if (offset == 0) max else 0,
+                )
+            }
+        }
     }
+    return result
+}
+
+private fun lockedInput(planCourse: PlanCourse, section: CourseSection?, min: Int, max: Int) = ScheduleCourseInput(
+    planCourse.key,
+    isRequired = true,
+    sections = listOfNotNull(section),
+    excludedCRNs = emptySet(),
+    minCredits = min,
+    maxCredits = max,
+    locked = true,
+    unavailableCRN = if (section == null) planCourse.manualCRN else null,
+)
 
 fun GeneratedSchedule.Companion.favorites(plan: SchedulePlan, index: CatalogIndex, preferences: SchedulePreferences): List<GeneratedSchedule> {
     val order = plan.courses.mapIndexed { indexInPlan, course -> course.key to indexInPlan }.toMap()
@@ -561,7 +657,13 @@ object ScheduleNoResultsText {
         val result = ArrayList<Reason>()
         for (report in diagnostics.courses) {
             if (!report.isBlocked || !report.isRequired) continue
-            if (report.totalSections == 0) {
+            if (report.unavailableCRN != null) {
+                result += Reason(
+                    "questionmark.folder",
+                    "CRN ${report.unavailableCRN} is unavailable",
+                    "That section is no longer in the $termName catalog, so another section of ${report.key.description} is not used.",
+                )
+            } else if (report.totalSections == 0) {
                 result += Reason("questionmark.folder", "${report.key.description} isn’t offered in $termName", "Remove it from the schedule or make it optional.")
             } else {
                 result += Reason("xmark.circle", "No ${report.key.description} sections left", rejectionText(report, diagnostics))
@@ -677,8 +779,9 @@ object ScheduleAutofillSupport {
             degreePlans,
             schedulePlans,
             plan.id,
-            plan.courses.map { it.key }.toSet(),
+            plan.courses.map { it.key },
             index,
+            plan.courses.map { it.manualCRN },
         )
     }
 
@@ -739,23 +842,27 @@ object ScheduleClock {
 
 object SchedulePlanActions {
     fun removeCourse(entry: ResolvedPlan.Entry, plan: SchedulePlan, index: CatalogIndex?, userData: UserDataStore): PlanCourseRemoval {
+        val protected = plan.courses.mapNotNull { it.manualCRN }.filter { it != entry.planCourse.manualCRN }.toSet()
         val crns = entry.courseCRNs.toMutableSet()
         crns += entry.selected.map { it.crn }
-        if (index != null) crns += index.sections(entry.key).map { it.crn }
+        if (index != null && entry.planCourse.manualCRN == null) crns += index.sections(entry.key).map { it.crn }
+        crns -= protected
         val removal = PlanCourseRemoval(
             entry.planCourse,
-            plan.courses.indexOfFirst { it.key == entry.key }.let { if (it < 0) plan.courses.size else it },
+            plan.courses.indexOfFirst { it.key == entry.key && it.manualCRN == entry.planCourse.manualCRN }.let { if (it < 0) plan.courses.size else it },
             plan.selectedCRNs.filter { it in crns },
             plan.favoriteCombinations.filter { combo -> combo.any { it in crns } },
         )
-        userData.removeCourse(entry.key, plan.id, crns.toList())
+        userData.removeCourse(entry.key, plan.id, crns.toList(), entry.planCourse.crn)
         return removal
     }
 
     fun addAutofill(suggestion: ScheduleAutofillSuggestion, planId: String, userData: UserDataStore): List<CourseKey> {
-        val added = ArrayList<CourseKey>()
-        for (key in suggestion.courses) if (userData.addCourse(key, planId, required = true)) added += key
-        return added
+        val before = userData.plan(planId) ?: return emptyList()
+        val merged = ScheduleCourseSync.merge(before, suggestion.syncedRows())
+        if (merged === before) return emptyList()
+        userData.updatePlan(planId) { merged }
+        return merged.courses.drop(before.courses.size).map { it.key }
     }
 
     fun undoAutofill(keys: List<CourseKey>, planId: String, index: CatalogIndex?, userData: UserDataStore) {

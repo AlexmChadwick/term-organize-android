@@ -119,13 +119,17 @@ internal object ScheduleEngine {
             val remaining = ArrayList<CourseSection>()
             val rejections = LinkedHashMap<ScheduleFilterReason, Int>()
             for (section in course.sections) {
+                if (course.locked) {
+                    remaining += section
+                    continue
+                }
                 val reasons = ScheduleGenerator.rejectionReasons(section, filters, preferences, course.excludedCRNs)
                 if (reasons.isEmpty()) remaining += section
                 else reasons.forEach { rejections[it] = (rejections[it] ?: 0) + 1 }
             }
             kept += remaining
             reports += ScheduleDiagnostics.CourseReport(
-                course.key, course.isRequired, course.sections.size, remaining.size, rejections,
+                course.key, course.isRequired, course.sections.size, remaining.size, rejections, course.unavailableCRN,
             )
         }
         var diagnostics = ScheduleDiagnostics(courses = reports, filters = filters, preferences = preferences)

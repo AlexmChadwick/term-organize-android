@@ -105,16 +105,17 @@ internal class AuditEngine(
                 order++
                 return
             }
-            var use = DegreeAudit.CourseUse(key, course.title, course.credits, semester, order)
-            val earlier = instances[key].orEmpty().mapNotNull { pool[it] }
-            val repeated = earlier.firstOrNull { !DegreeCourseRepeats.countsSeparately(use.title, use.credits, it.title, it.credits) }
-            if (repeated != null) {
-                val better = if (repeated.isCompleted == use.isCompleted) use.credits > repeated.credits else use.isCompleted
-                if (better) pool[repeated.id] = use.copy(instance = repeated.instance)
-                order++
-                return
-            }
-            use = use.copy(instance = earlier.size)
+            val earlier = instances[key].orEmpty().size
+            val use = DegreeAudit.CourseUse(
+                key,
+                course.title,
+                course.credits,
+                semester,
+                order,
+                instance = earlier,
+                crn = course.crn,
+                rowId = course.id,
+            )
             pool[use.id] = use
             instances.getOrPut(key) { mutableListOf() }.add(use.id)
             order++
@@ -251,12 +252,12 @@ internal class AuditEngine(
         for (rule in rules) {
             if (effective[rule.id] !is Effective.Kind) continue
             for (substitution in substitutionsByRule[rule.id].orEmpty()) {
-                val key = (substitution.change as? SubstitutionChange.CountCourse)?.key ?: continue
-                val taken = standIn(key) ?: run {
+                val change = substitution.change as? SubstitutionChange.CountCourse ?: continue
+                val taken = rowFor(change) ?: run {
                     unmatched += substitution
                     continue
                 }
-                consume(taken, rule.id, bySubstitution = true, satisfying = key)
+                consume(taken, rule.id, bySubstitution = true, satisfying = change.key)
                 optionsCounted[rule.id] = (optionsCounted[rule.id] ?: 0) + 1
             }
         }
@@ -474,6 +475,14 @@ internal class AuditEngine(
         )
         available.remove(id)
         used.getOrPut(ruleID) { mutableListOf() }.add(use)
+    }
+
+    /** A substitution that names a row uses that row only. One that does not takes the next free copy. */
+    private fun rowFor(change: SubstitutionChange.CountCourse): String? {
+        val row = change.rowId ?: return standIn(change.key)
+        return instances[change.key].orEmpty().firstOrNull { id ->
+            id in available && pool[id]?.rowId == row
+        }
     }
 
     private fun standIn(required: CourseKey, claimed: Set<String> = emptySet()): String? {
@@ -957,7 +966,7 @@ internal class AuditEngine(
         for (use in pool.values) if (use.id !in counted && courseInRange(use.key, ranges) != null) counted[use.id] = use
         val completed = counted.values.filter { it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val planned = counted.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
-        val (status, detail) = hoursStatus(completed, planned, required)
+        val (status, detail) = DegreeAudit.hoursStatus(completed, planned, required)
         return DegreeAudit.NoteCheck(sectionID, note, DegreeAudit.NoteCheck.Kind.MajorHours(required), status, detail)
     }
 
@@ -1065,7 +1074,7 @@ internal class AuditEngine(
         val planned = pool.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val items = mutableListOf<DegreeAudit.NoteItem>()
         minimums.totalHours?.let { total ->
-            val (status, detail) = hoursStatus(completed, planned, total)
+            val (status, detail) = DegreeAudit.hoursStatus(completed, planned, total)
             items += DegreeAudit.NoteItem("total-hours", "${formatHours(total)} total semester hours", status, detail)
         }
         if (minimums.requiresExperientialLearning) {
@@ -1102,7 +1111,7 @@ internal class AuditEngine(
     private fun totalHoursCheck(sectionID: String, note: String, required: Double): DegreeAudit.NoteCheck {
         val completed = pool.values.filter { it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
         val planned = pool.values.filter { !it.isCompleted }.sumOf { maxOf(0.0, it.credits) }
-        val (status, detail) = hoursStatus(completed, planned, required)
+        val (status, detail) = DegreeAudit.hoursStatus(completed, planned, required)
         return DegreeAudit.NoteCheck(sectionID, note, DegreeAudit.NoteCheck.Kind.TotalHours(required), status, detail)
     }
 
@@ -1134,18 +1143,6 @@ internal class AuditEngine(
         private fun totalHours(note: String) =
             Regex("""(?i)(\d+(?:\.\d+)?)\s+total\s+semester\s+hours\s+required""")
                 .find(note)?.groupValues?.get(1)?.toDoubleOrNull()
-
-        private fun hoursStatus(completed: Double, planned: Double, required: Double): Pair<DegreeAudit.Status, String> {
-            val status = when {
-                completed >= required -> DegreeAudit.Status.COMPLETE
-                completed + planned >= required -> DegreeAudit.Status.PLANNED
-                completed + planned > 0 -> DegreeAudit.Status.PARTIAL
-                else -> DegreeAudit.Status.MISSING
-            }
-            var detail = "${formatHours(completed + planned)} of ${formatHours(required)} semester hours"
-            if (planned > 0) detail += " · ${formatHours(planned)} planned"
-            return status to detail
-        }
 
         private fun describe(uses: List<DegreeAudit.CourseUse>) = uses.joinToString(" · ") { use ->
             if (use.isCompleted) "${use.key.description} completed" else "${use.key.description} planned${use.semester?.let { " · $it" } ?: ""}"

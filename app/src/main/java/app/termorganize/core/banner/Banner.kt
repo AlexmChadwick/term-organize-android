@@ -10,6 +10,8 @@ import app.termorganize.core.model.HONORS_ATTRIBUTE_CODE
 import app.termorganize.core.model.Instructor
 import app.termorganize.core.model.Meeting
 import app.termorganize.core.model.Requisite
+import app.termorganize.core.model.RestrictionKind
+import app.termorganize.core.model.SectionRestriction
 import app.termorganize.core.model.Subject
 import app.termorganize.core.model.TimeOfDay
 import app.termorganize.core.model.nilIfBlank
@@ -218,6 +220,40 @@ object BannerParsers {
             credits?.first,
             credits?.second,
         )
+    }
+
+    private val restrictionHeading = Regex(
+        """^(Must|Cannot) be enrolled in one of the following ([^:]+):\s*(.*)$""",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Parses a getRestrictions HTML page into must/cannot lists. The raw page is not shown. */
+    fun restrictions(html: String): List<SectionRestriction> {
+        val lines = HTMLText.plainText(html).split('\n')
+        val found = mutableListOf<SectionRestriction>()
+        var kind: RestrictionKind? = null
+        var category = ""
+        val values = mutableListOf<String>()
+        fun flush() {
+            val current = kind ?: return
+            found += SectionRestriction(current, category, values.toList())
+            values.clear()
+            kind = null
+        }
+        for (line in lines) {
+            val heading = restrictionHeading.matchEntire(line.trim())
+            if (heading != null) {
+                flush()
+                kind = if (heading.groupValues[1].equals("Must", true)) RestrictionKind.MUST else RestrictionKind.CANNOT
+                category = heading.groupValues[2].trim()
+                val inline = heading.groupValues[3].trim()
+                if (inline.isNotEmpty()) values += inline
+            } else if (kind != null && line.isNotBlank()) {
+                values += line.trim()
+            }
+        }
+        flush()
+        return found
     }
 
     fun creditRange(text: String): Pair<Double, Double>? {
@@ -507,6 +543,10 @@ object CatalogBuilder {
                 description = prior?.description,
                 prereqs = prior?.prereqs,
                 coreqs = prior?.coreqs,
+                creditHours = s.creditHours,
+                creditHourLow = s.creditHourLow,
+                creditHourHigh = s.creditHourHigh,
+                restrictions = prior?.restrictions,
             )
         }
     }
@@ -521,24 +561,31 @@ object CatalogBuilder {
             for (a in sectionAttributes) attributes[a.code] = HTMLText.decodeEntities(a.description ?: a.code).trim()
             val isTopics = sectionAttributes.any { it.code == "TOPC" }
             val existing = courses[key]
+            val low = s.creditHourLow ?: s.creditHours ?: 0.0
+            val high = s.creditHourHigh ?: low
             if (existing != null) {
                 val codes = (existing.attributes + sectionAttributes.map { it.code }.filter { it != HONORS_ATTRIBUTE_CODE }).toSortedSet()
-                var next = existing.copy(attributes = codes.toList())
+                var next = existing.copy(
+                    attributes = codes.toList(),
+                    minCredits = minOf(existing.minCredits, low),
+                    maxCredits = maxOf(existing.maxCredits, high),
+                    creditHours = existing.creditHours ?: s.creditHours,
+                )
                 if (!next.specialTopics && isTopics) next = next.copy(specialTopics = true, title = "Special Topics")
                 courses[key] = next
             } else {
                 val special = title.contains("Special Topics", true) || isTopics
-                val low = s.creditHourLow ?: s.creditHours ?: 0.0
                 courses[key] = app.termorganize.core.model.Course(
                     subject = s.subject,
                     number = s.courseNumber,
                     title = if (special) "Special Topics" else title,
                     description = "",
                     minCredits = low,
-                    maxCredits = s.creditHourHigh ?: low,
+                    maxCredits = high,
                     attributes = sectionAttributes.map { it.code }.filter { it != HONORS_ATTRIBUTE_CODE }.sorted(),
                     specialTopics = special,
                     detailsLoaded = false,
+                    creditHours = s.creditHours,
                 )
             }
         }
@@ -571,6 +618,7 @@ object CatalogBuilder {
                 return@map known.copy(
                     minCredits = stub.minCredits,
                     maxCredits = stub.maxCredits,
+                    creditHours = stub.creditHours ?: known.creditHours,
                     attributes = stub.attributes,
                     specialTopics = known.specialTopics || stub.specialTopics,
                 )
@@ -580,6 +628,7 @@ object CatalogBuilder {
                 return@map borrowed.copy(
                     minCredits = stub.minCredits,
                     maxCredits = stub.maxCredits,
+                    creditHours = stub.creditHours ?: borrowed.creditHours,
                     attributes = stub.attributes,
                     specialTopics = borrowed.specialTopics || stub.specialTopics,
                     postreqs = emptyList(),

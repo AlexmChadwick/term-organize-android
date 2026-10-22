@@ -4,6 +4,7 @@
 package app.termorganize.logic.degree
 
 import app.termorganize.core.model.CourseKey
+import app.termorganize.core.model.CreditFormatter
 import app.termorganize.logic.degree.DegreeAudit.CourseUse
 import app.termorganize.logic.degree.DegreeAudit.NoteCheck
 import app.termorganize.logic.degree.DegreeAudit.RuleResult
@@ -30,6 +31,16 @@ enum class DegreeRequirementsFilter {
 
 data class DegreeNoteEntry(val sectionID: String, val text: String, val check: NoteCheck?) {
     val id: String get() = "$sectionID|$text"
+}
+
+object DegreeRequirementText {
+    /** `105 of 134 credits done · 30 planned`. The first number is credits already earned. */
+    fun creditsLine(audit: DegreeAudit.Result): String {
+        val done = CreditFormatter.number(audit.completedHours)
+        var line = audit.requiredHours?.let { "$done of ${CreditFormatter.number(it)} credits done" } ?: "$done credits done"
+        if (audit.plannedHours > 0) line += " · ${CreditFormatter.number(audit.plannedHours)} planned"
+        return line
+    }
 }
 
 object DegreeRequirementNotes {
