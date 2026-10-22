@@ -20,6 +20,77 @@ object DegreePlanEditing {
         return plan.copy(terms = terms)
     }
 
+    /**
+     * Adds a second row of a course that is already in the plan. Every unpinned row of that
+     * course must be given a CRN in [existingPins], and the new row's CRN must be different.
+     * [termId] null appends the new row to completed courses.
+     */
+    fun addDuplicate(
+        plan: DegreePlan,
+        termId: String?,
+        course: DegreePlanCourse,
+        existingPins: Map<String, String>,
+        titles: Map<String, String> = emptyMap(),
+    ): DegreePlan {
+        val key = course.key ?: return plan
+        val newCrn = course.manualCRN ?: return plan
+        val same = rows(plan, key)
+        if (same.isEmpty()) return plan
+        val unpinned = same.filter { it.manualCRN == null }
+        if (unpinned.any { it.id !in existingPins }) return plan
+        val pins = existingPins.filterKeys { id -> unpinned.any { it.id == id } }
+        val chosen = pins.values.map { it.trim() }
+        if (chosen.any { it.isEmpty() } || chosen.distinct().size != chosen.size || newCrn in chosen) return plan
+        val used = (plan.completed + plan.terms.flatMap { it.courses }).mapNotNull { it.manualCRN }.toSet()
+        if (newCrn in used || chosen.any { it in used }) return plan
+        val pinned = pinRows(plan, pins, titles)
+        val incoming = course.copy(crn = newCrn)
+        if (!pinned.admits(incoming)) return plan
+        return if (termId == null) pinned.copy(completed = pinned.completed + incoming)
+        else add(incoming, termId, pinned)
+    }
+
+    /** Sets one row's CRN. A sibling that still has no CRN is left for [pinRows]. */
+    fun setSection(plan: DegreePlan, courseId: String, crn: String, title: String? = null): DegreePlan {
+        val pin = crn.trim()
+        if (pin.isEmpty()) return plan
+        val all = plan.completed + plan.terms.flatMap { it.courses }
+        val row = all.firstOrNull { it.id == courseId } ?: return plan
+        if (all.any { it.id != courseId && it.manualCRN == pin }) return plan
+        val key = row.key
+        if (key != null && all.any { it.key == key && it.id != courseId && it.manualCRN == null }) return plan
+        return replaceCourse(plan, courseId) { current ->
+            current.copy(crn = pin, title = title?.takeIf { it.isNotBlank() } ?: current.title)
+        }
+    }
+
+    /** Assigns a CRN to each listed row. The CRNs have to differ, and none may already belong to another row. */
+    fun pinRows(plan: DegreePlan, pins: Map<String, String>, titles: Map<String, String> = emptyMap()): DegreePlan {
+        if (pins.isEmpty()) return plan
+        val all = plan.completed + plan.terms.flatMap { it.courses }
+        val cleaned = pins.mapValues { it.value.trim() }
+        if (cleaned.values.any { it.isEmpty() } || cleaned.values.distinct().size != cleaned.size) return plan
+        if (cleaned.keys.any { id -> all.none { it.id == id } }) return plan
+        val usedElsewhere = all.filter { it.id !in cleaned }.mapNotNull { it.manualCRN }.toSet()
+        if (cleaned.values.any { it in usedElsewhere }) return plan
+        var updated = plan
+        for ((id, pin) in cleaned) {
+            updated = replaceCourse(updated, id) { current ->
+                current.copy(crn = pin, title = titles[id]?.takeIf { it.isNotBlank() } ?: current.title)
+            }
+        }
+        return updated
+    }
+
+    private fun rows(plan: DegreePlan, key: app.termorganize.core.model.CourseKey): List<DegreePlanCourse> =
+        plan.completed.filter { it.key == key } + plan.terms.flatMap { it.courses }.filter { it.key == key }
+
+    private fun replaceCourse(plan: DegreePlan, courseId: String, block: (DegreePlanCourse) -> DegreePlanCourse): DegreePlan =
+        plan.copy(
+            completed = plan.completed.map { if (it.id == courseId) block(it) else it },
+            terms = plan.terms.map { term -> term.copy(courses = term.courses.map { if (it.id == courseId) block(it) else it }) },
+        )
+
     fun replacePlannedCourse(courseId: String, replacement: DegreePlanCourse, plan: DegreePlan): DegreePlan {
         val terms = plan.terms.map { term ->
             val position = term.courses.indexOfFirst { it.id == courseId }

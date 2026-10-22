@@ -610,6 +610,48 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun addDuplicateCourse(
+        planId: String,
+        course: DegreePlanCourse,
+        existingPins: Map<String, String>,
+        titles: Map<String, String> = emptyMap(),
+        termId: String? = null,
+        season: PlanSeason? = null,
+        year: Int? = null,
+        completed: Boolean = false,
+    ) {
+        updateDegree(planId) { plan ->
+            var updated = plan
+            val destination = when {
+                completed -> null
+                termId != null -> termId
+                season != null && year != null -> {
+                    val existing = updated.terms.firstOrNull { it.season == season && it.year == year }
+                    if (existing != null) existing.id
+                    else {
+                        val created = DegreePlanTerm(season = season, year = year)
+                        updated = updated.copy(terms = (updated.terms + created).sortedBy { it.sortKey })
+                        created.id
+                    }
+                }
+                else -> return@updateDegree plan
+            }
+            DegreePlanEditing.addDuplicate(updated, destination, course, existingPins, titles)
+        }
+    }
+
+    fun setDegreeSection(planId: String, courseId: String, crn: String, title: String? = null) {
+        updateDegree(planId) { DegreePlanEditing.setSection(it, courseId, crn, title) }
+    }
+
+    fun pinDegreeRows(planId: String, pins: Map<String, String>, titles: Map<String, String> = emptyMap()) {
+        updateDegree(planId) { DegreePlanEditing.pinRows(it, pins, titles) }
+    }
+
+    fun moveDegreeCourse(planId: String, courseId: String, termId: String) {
+        updateDegree(planId) { DegreePlanEditing.move(courseId, termId, Int.MAX_VALUE, it) }
+    }
+
     fun addTerm(planId: String, season: PlanSeason, year: Int) {
         updateDegree(planId) { plan ->
             if (plan.terms.any { it.season == season && it.year == year }) plan
