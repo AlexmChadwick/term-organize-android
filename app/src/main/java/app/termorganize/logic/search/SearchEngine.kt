@@ -8,6 +8,7 @@ import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
 import app.termorganize.core.model.DaySet
 import app.termorganize.core.model.NUPath
+import app.termorganize.core.model.Requisite
 import java.text.Normalizer
 import java.util.Locale
 
@@ -25,6 +26,13 @@ data class SearchFilters(
     val classTypes: Set<String> = emptySet(),
     val honorsOnly: Boolean = false,
     val openSeatsOnly: Boolean = false,
+    /**
+     * Keep a course only when its catalog details are loaded and [Course.prereqs] is absent.
+     * A null requisite on a course whose details have not been loaded is unknown, not none.
+     */
+    val noPrerequisites: Boolean = false,
+    /** Same rule as [noPrerequisites], for [Course.coreqs]. */
+    val noCorequisites: Boolean = false,
     val instruction: InstructionFilter = InstructionFilter.ANY,
     val allowedDays: DaySet? = null,
     val startsAfter: Int? = null,
@@ -41,6 +49,8 @@ data class SearchFilters(
             if (classTypes.isNotEmpty()) n++
             if (honorsOnly) n++
             if (openSeatsOnly) n++
+            if (noPrerequisites) n++
+            if (noCorequisites) n++
             if (instruction != InstructionFilter.ANY) n++
             if (allowedDays != null) n++
             if (startsAfter != null || endsBefore != null) n++
@@ -63,8 +73,18 @@ data class SearchFilters(
         }
         if (minCredits != null && course.maxCredits < minCredits) return false
         if (maxCredits != null && course.minCredits > maxCredits) return false
+        if (noPrerequisites && !knownEmpty(course.detailsLoaded, course.prereqs)) return false
+        if (noCorequisites && !knownEmpty(course.detailsLoaded, course.coreqs)) return false
         return true
     }
+
+    /**
+     * Banner leaves the requisite null both when a loaded course has none and when the course
+     * was built from a section list before its catalog page was read. [Course.detailsLoaded]
+     * is what separates those: true and a null requisite is none; false is unknown.
+     */
+    private fun knownEmpty(detailsLoaded: Boolean, requisite: Requisite?): Boolean =
+        detailsLoaded && requisite == null
 
     fun matches(section: CourseSection): Boolean {
         if (campuses.isNotEmpty() && section.campus !in campuses) return false

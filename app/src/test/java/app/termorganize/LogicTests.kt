@@ -257,6 +257,53 @@ class LogicTests {
         assertTrue(results.all { result -> result.course.subject == "CS" && index.sections(result.course.key).any { filters.matches(it) } })
     }
 
+    @Test fun noRequisiteFiltersSkipCoursesWhoseDetailsAreUnknown() {
+        fun course(subject: String, number: String, prereqs: Requisite? = null, coreqs: Requisite? = null, loaded: Boolean = true) = Course(
+            subject, number, "$subject $number", minCredits = 4.0, maxCredits = 4.0,
+            prereqs = prereqs, coreqs = coreqs, detailsLoaded = loaded,
+        )
+        val none = course("CS", "1200", loaded = true)
+        val prereqOnly = course("CS", "2386", prereqs = Requisite.course(CourseKey("CS", "1800")))
+        val coreqOnly = course("ARCH", "1310", coreqs = Requisite.course(CourseKey("ARCH", "1311")))
+        val both = course("CS", "3000", prereqs = Requisite.course(CourseKey("CS", "2100")), coreqs = Requisite.course(CourseKey("CS", "3001")))
+        val unknown = course("CS", "9999", loaded = false)
+        val courses = listOf(none, prereqOnly, coreqOnly, both, unknown)
+        val index = CatalogIndex.build(TermCatalog(
+            term = Term("202710", "Fall 2026 Semester"),
+            courses = courses,
+            sections = courses.map { CourseSection(it.number, it.subject, it.number, seatsRemaining = 10, seatCapacity = 20) },
+            subjects = listOf(Subject("CS", "Computer Science"), Subject("ARCH", "Architecture")),
+        ))
+        fun codes(filters: SearchFilters) = SearchEngine.search(SearchQuery("", filters), index).results.map { it.course.code }
+
+        val noPrereqs = SearchFilters(noPrerequisites = true)
+        val noCoreqs = SearchFilters(noCorequisites = true)
+        val neither = SearchFilters(noPrerequisites = true, noCorequisites = true)
+        assertEquals(listOf("ARCH 1310", "CS 1200"), codes(noPrereqs))
+        assertEquals(listOf("CS 1200", "CS 2386"), codes(noCoreqs))
+        assertEquals(listOf("CS 1200"), codes(neither))
+        assertFalse(noPrereqs.matches(unknown))
+        assertFalse(noCoreqs.matches(unknown))
+        assertTrue(noPrereqs.matches(none))
+        assertTrue(noPrereqs.matches(coreqOnly))
+        assertFalse(noPrereqs.matches(prereqOnly))
+        assertTrue(noCoreqs.matches(prereqOnly))
+        assertFalse(noCoreqs.matches(coreqOnly))
+        assertEquals(1, noPrereqs.activeCount)
+        assertEquals(2, neither.activeCount)
+        assertFalse(neither.hasSectionFilters)
+
+        val bundled = bundledIndex()
+        val bundledNone = SearchEngine.search(SearchQuery("", noPrereqs), bundled).results
+        assertTrue(bundledNone.isNotEmpty())
+        assertTrue(bundledNone.all { it.course.detailsLoaded && it.course.prereqs == null })
+        assertTrue(SearchEngine.search(SearchQuery("CS 1200", neither), bundled).results.any { it.course.code == "CS 1200" })
+        assertTrue(SearchEngine.search(SearchQuery("CS 3000", noPrereqs), bundled).results.none { it.course.code == "CS 3000" })
+        assertTrue(SearchEngine.search(SearchQuery("CS 2386", noCoreqs), bundled).results.any { it.course.code == "CS 2386" })
+        assertTrue(SearchEngine.search(SearchQuery("ARCH 1310", noCoreqs), bundled).results.none { it.course.code == "ARCH 1310" })
+        assertTrue(SearchEngine.search(SearchQuery("CS 3000", neither), bundled).results.none { it.course.code == "CS 3000" })
+    }
+
     @Test fun scheduleGenerator() {
         fun section(crn: String, subject: String, number: String, days: List<Int>, start: Double, end: Double) = CourseSection(
             crn = crn, subject = subject, number = number, title = "$subject $number", sectionNumber = "01",

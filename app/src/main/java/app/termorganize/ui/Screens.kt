@@ -527,7 +527,7 @@ private fun CourseHit(code: String, title: String, meta: String, open: () -> Uni
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun FilterSheet(
+internal fun FilterSheet(
     index: app.termorganize.logic.search.CatalogIndex,
     filters: SearchFilters,
     onChange: (SearchFilters) -> Unit,
@@ -582,6 +582,8 @@ private fun FilterSheet(
         }
         SettingSwitch("Open seats only", filters.openSeatsOnly) { onChange(filters.copy(openSeatsOnly = it)) }
         SettingSwitch("Honors only", filters.honorsOnly) { onChange(filters.copy(honorsOnly = it)) }
+        SettingSwitch("No prerequisites", filters.noPrerequisites, tag = "filter-no-prerequisites") { onChange(filters.copy(noPrerequisites = it)) }
+        SettingSwitch("No corequisites", filters.noCorequisites, tag = "filter-no-corequisites") { onChange(filters.copy(noCorequisites = it)) }
         Text("Credits", style = MaterialTheme.typography.titleSmall)
         ChipFlow {
             listOf(null to "Any", 1.0 to "1+", 3.0 to "3+", 4.0 to "4").forEach { (value, label) ->
