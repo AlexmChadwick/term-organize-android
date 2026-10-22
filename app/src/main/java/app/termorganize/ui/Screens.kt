@@ -112,9 +112,7 @@ import app.termorganize.logic.degree.DegreePlan
 import app.termorganize.logic.degree.DegreePlanAnalysis
 import app.termorganize.logic.degree.DegreePlanAutofill
 import app.termorganize.logic.degree.DegreePlanCourse
-import app.termorganize.logic.degree.DegreePlanTerm
 import app.termorganize.logic.degree.DegreeRequirementText
-import app.termorganize.logic.degree.DegreeSectionChoice
 import app.termorganize.logic.degree.PlanSeason
 import app.termorganize.logic.degree.RequirementSubstitution
 import app.termorganize.logic.degree.SchedulePlan
@@ -1122,7 +1120,7 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
     val user by model.user.collectAsState()
@@ -1141,7 +1139,6 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
     val offering by model.offering.collectAsState()
     val context = LocalContext.current
     val courseInfo by model.courseInfo.collectAsState()
-    var pendingSections by remember { mutableStateOf<PendingSections?>(null) }
     LaunchedEffect(plan?.id, plan?.updatedAt, index?.term?.code) {
         val current = plan ?: return@LaunchedEffect
         model.refreshOffering(current)
@@ -1179,38 +1176,13 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
             TextButton(onClick = { share(context, model.exportPlanPdf(plan), "application/pdf") }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Export PDF") }
             TextButton(onClick = { model.deleteDegree(plan.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Delete", color = MaterialTheme.colorScheme.error) }
         }
-        fun beginChange(course: DegreePlanCourse, term: DegreePlanTerm?) {
-            val key = course.key ?: return
-            val same = plan.completed.filter { it.key == key } + plan.terms.flatMap { it.courses }.filter { it.key == key }
-            val unpinnedSiblings = same.filter { it.id != course.id && it.manualCRN == null }
-            val groups = if (unpinnedSiblings.isNotEmpty() || (course.manualCRN == null && same.size > 1)) {
-                (listOf(course) + unpinnedSiblings).distinctBy { it.id }.map {
-                    SectionGroup(it.id, "Section for the course already in ${coursePlace(plan, it.id)}")
-                }
-            } else {
-                listOf(SectionGroup(course.id, "Section for ${course.label.ifBlank { key.description }}"))
-            }
-            val changing = groups.map { it.id }.toSet()
-            val sections = if (term != null) DegreeSectionChoice.offered(term, key, index) else index?.sections(key).orEmpty()
-            val termName = term?.name ?: index?.term?.name ?: "this term"
-            pendingSections = PendingSections(
-                sections = sections,
-                groups = groups,
-                taken = (plan.completed + plan.terms.flatMap { it.courses }).filter { it.id !in changing }.mapNotNull { it.manualCRN }.toSet(),
-                confirmLabel = if (groups.size > 1) "Save sections" else "Use this section",
-                emptyText = "No sections are listed for $termName yet.",
-                add = null,
-            )
-        }
         Text("Completed", style = MaterialTheme.typography.titleMedium)
-        plan.completed.forEach { course ->
-            CourseRow(plan, course, model, index, courseInfo, completed = true, onChangeSection = { beginChange(course, null) })
-        }
+        plan.completed.forEach { course -> CourseRow(plan, course, model, index, courseInfo, completed = true) }
         Text("Planned", style = MaterialTheme.typography.titleMedium)
         plan.terms.forEach { term ->
             Text("${term.shortName} (${term.credits} hours)", fontWeight = FontWeight.SemiBold)
             term.courses.forEach { course ->
-                CourseRow(plan, course, model, index, courseInfo, termIndex = plan.terms.indexOf(term), onChangeSection = { beginChange(course, term) })
+                CourseRow(plan, course, model, index, courseInfo, termIndex = plan.terms.indexOf(term))
                 val line = model.offeringLine(course.key, term.season)
                 if (line != null) Text(line, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -1229,49 +1201,18 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
         OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(credits, { credits = it }, label = { Text("Hours") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         val parsedKey = CourseKey.parse(code)
-        fun beginAdd(term: DegreePlanTerm?, completed: Boolean, season: PlanSeason? = null, year: Int? = null, termName: String) {
-            val hours = credits.toDoubleOrNull() ?: 0.0
-            val courseTitle = title.ifBlank { parsedKey?.description ?: code }
-            val draft = DegreePlanCourse.of(parsedKey, courseTitle, hours, code)
-            val same = if (parsedKey == null) emptyList() else plan.completed.filter { it.key == parsedKey } + plan.terms.flatMap { it.courses }.filter { it.key == parsedKey }
-            if (parsedKey == null || same.isEmpty()) {
-                if (completed) model.addCompleted(plan.id, draft)
-                else if (term != null) model.addPlanned(plan.id, term.id, draft)
-                else if (season != null && year != null) {
-                    model.addTerm(plan.id, season, year)
-                    val termId = model.user.value.degreePlans.first { it.id == plan.id }.terms.first { it.season == season && it.year == year }.id
-                    model.addPlanned(plan.id, termId, draft)
-                }
-                return
-            }
-            val sections = when {
-                term != null -> DegreeSectionChoice.offered(term, parsedKey, index)
-                season != null && year != null -> DegreeSectionChoice.offered(DegreePlanTerm(season = season, year = year), parsedKey, index)
-                else -> index?.sections(parsedKey).orEmpty()
-            }
-            val unpinned = same.filter { it.manualCRN == null }
-            val groups = unpinned.map { SectionGroup(it.id, "Section for the course already in ${coursePlace(plan, it.id)}") } +
-                listOf(SectionGroup("new", "Section for the new row"))
-            pendingSections = PendingSections(
-                sections = sections,
-                groups = groups,
-                taken = plan.completed.mapNotNull { it.manualCRN }.toSet() + plan.terms.flatMap { it.courses }.mapNotNull { it.manualCRN },
-                confirmLabel = if (groups.size > 1) "Add both sections" else "Add section",
-                emptyText = DegreeSectionChoice.message(termName),
-                add = PendingAdd(draft, term?.id, season, year, completed),
-            )
-        }
         ChipFlow {
-            Button(onClick = { beginAdd(null, completed = true, termName = index?.term?.name ?: "this term") }) { Text("Completed") }
+            Button(onClick = {
+                val course = DegreePlanCourse.of(parsedKey, title.ifBlank { parsedKey?.description ?: code }, credits.toDoubleOrNull() ?: 0.0, code)
+                model.addCompleted(plan.id, course)
+            }) { Text("Completed") }
             val next = DegreePlanAutofill.nextSemesters(plan, 1).firstOrNull()
             if (next != null) {
                 OutlinedButton(onClick = {
-                    val existing = plan.terms.firstOrNull { it.season == next.season && it.year == next.year }
-                    beginAdd(existing, completed = false, season = next.season, year = next.year, termName = next.name)
+                    model.addTerm(plan.id, next.season, next.year)
+                    val termId = model.user.value.degreePlans.first { it.id == plan.id }.terms.first { it.season == next.season && it.year == next.year }.id
+                    model.addPlanned(plan.id, termId, DegreePlanCourse.of(parsedKey, title.ifBlank { parsedKey?.description ?: code }, credits.toDoubleOrNull() ?: 0.0, code))
                 }) { Text("Next semester") }
-            }
-            plan.terms.forEach { term ->
-                OutlinedButton(onClick = { beginAdd(term, completed = false, termName = term.name) }) { Text("Add to ${term.shortName}") }
             }
         }
         Text("Semesters", style = MaterialTheme.typography.titleSmall)
@@ -1384,68 +1325,6 @@ private fun DegreeScreen(model: AppModel, onImportPdf: () -> Unit) {
             }
         }
     }
-    val request = pendingSections
-    if (request != null && plan != null) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(onDismissRequest = { pendingSections = null }, sheetState = sheetState) {
-            DegreeSectionPicker(
-                sections = request.sections,
-                groups = request.groups,
-                takenCrns = request.taken,
-                confirmLabel = request.confirmLabel,
-                emptyText = request.emptyText,
-                onConfirm = { chosen ->
-                    val titles = request.sections.associate { it.crn to it.title }
-                    val adding = request.add
-                    if (adding == null) {
-                        if (chosen.size == 1) {
-                            val (courseId, crn) = chosen.entries.first()
-                            model.setDegreeSection(plan.id, courseId, crn, titles[crn])
-                        } else {
-                            model.pinDegreeRows(plan.id, chosen, chosen.mapValues { titles[it.value].orEmpty() })
-                        }
-                    } else {
-                        val newCrn = chosen.getValue("new")
-                        val pins = chosen.filterKeys { it != "new" }
-                        val sectionTitle = titles[newCrn]?.takeIf { it.isNotBlank() } ?: adding.course.title
-                        model.addDuplicateCourse(
-                            plan.id,
-                            adding.course.copy(crn = newCrn, title = sectionTitle),
-                            pins,
-                            pins.mapValues { titles[it.value].orEmpty() },
-                            termId = adding.termId,
-                            season = adding.season,
-                            year = adding.year,
-                            completed = adding.completed,
-                        )
-                    }
-                    pendingSections = null
-                },
-            )
-        }
-    }
-}
-
-private data class PendingAdd(
-    val course: DegreePlanCourse,
-    val termId: String?,
-    val season: PlanSeason?,
-    val year: Int?,
-    val completed: Boolean,
-)
-
-private data class PendingSections(
-    val sections: List<CourseSection>,
-    val groups: List<SectionGroup>,
-    val taken: Set<String>,
-    val confirmLabel: String,
-    val emptyText: String,
-    val add: PendingAdd?,
-)
-
-private fun coursePlace(plan: DegreePlan, courseId: String): String {
-    if (plan.completed.any { it.id == courseId }) return "Completed"
-    return plan.terms.firstOrNull { term -> term.courses.any { it.id == courseId } }?.name ?: "the plan"
 }
 
 @Composable
@@ -1457,7 +1336,6 @@ private fun CourseRow(
     courseInfo: CourseInfoSnapshot,
     completed: Boolean = false,
     termIndex: Int = 0,
-    onChangeSection: () -> Unit = {},
 ) {
     val status = course.key?.let {
         DegreePlanAnalysis.prerequisiteStatus(
@@ -1479,33 +1357,13 @@ private fun CourseRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                val section = course.manualCRN?.let { index?.section(it) }
-                val sectionTitle = section?.title?.takeIf { it.isNotBlank() } ?: course.title
-                if (sectionTitle.isNotBlank()) {
-                    Text(sectionTitle, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                }
-                if (course.manualCRN != null) {
-                    Text("CRN ${course.manualCRN}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (course.title.isNotBlank()) {
+                    Text(course.title, style = MaterialTheme.typography.bodyLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
                 Text("${course.credits} hours", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onClick = { model.removeDegreeCourse(plan.id, course.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
                 Text("Remove", color = MaterialTheme.colorScheme.error)
-            }
-        }
-        if (course.key != null) {
-            TextButton(onClick = onChangeSection, modifier = Modifier.heightIn(min = 48.dp)) { Text("Change section") }
-        }
-        if (!completed) {
-            val others = plan.terms.filter { term -> term.courses.none { it.id == course.id } }
-            if (others.isNotEmpty()) {
-                ChipFlow {
-                    others.forEach { term ->
-                        TextButton(onClick = { model.moveDegreeCourse(plan.id, course.id, term.id) }, modifier = Modifier.heightIn(min = 48.dp)) {
-                            Text("Move to ${term.shortName}")
-                        }
-                    }
-                }
             }
         }
         if (status is DegreePlanAnalysis.PrerequisiteStatus.Missing) {
