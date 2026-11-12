@@ -16,6 +16,7 @@ import app.termorganize.logic.degree.TermCalendar
 import app.termorganize.logic.search.CatalogIndex
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import java.util.Locale
 
@@ -114,7 +115,9 @@ fun ScheduleExporter.contentValues(event: ScheduleExportEvent, calendarId: Long)
     values.put(CalendarContract.Events.TITLE, event.title)
     event.location?.let { values.put(CalendarContract.Events.EVENT_LOCATION, it) }
     values.put(CalendarContract.Events.DESCRIPTION, event.notes)
-    values.put(CalendarContract.Events.EVENT_TIMEZONE, "America/New_York")
+    val timed = event.startMinute != null && event.endMinute != null
+    // CalendarContract requires all-day events to be stored in UTC at UTC midnights.
+    values.put(CalendarContract.Events.EVENT_TIMEZONE, if (timed) "America/New_York" else "UTC")
     values.put(CalendarContract.Events.AVAILABILITY, CalendarContract.Events.AVAILABILITY_BUSY)
     val start = event.startMinute
     val end = event.endMinute
@@ -129,9 +132,9 @@ fun ScheduleExporter.contentValues(event: ScheduleExportEvent, calendarId: Long)
         }
     } else {
         values.put(CalendarContract.Events.ALL_DAY, 1)
-        values.put(CalendarContract.Events.DTSTART, zonedMillis(event.year, event.month, event.day, 0))
-        val next = LocalDate.of(event.year, event.month, event.day).plusDays(1)
-        values.put(CalendarContract.Events.DTEND, zonedMillis(next.year, next.monthValue, next.dayOfMonth, 0))
+        val day = LocalDate.of(event.year, event.month, event.day)
+        values.put(CalendarContract.Events.DTSTART, utcMidnightMillis(day))
+        values.put(CalendarContract.Events.DTEND, utcMidnightMillis(day.plusDays(1)))
         if (event.isRecurring) values.put(CalendarContract.Events.RRULE, rrule(event))
     }
     return values
@@ -294,6 +297,9 @@ private fun rrule(event: ScheduleExportEvent): String {
 
 private fun zonedMillis(year: Int, month: Int, day: Int, minute: Int): Long =
     ZonedDateTime.of(year, month, day, minute / 60, minute % 60, 0, 0, TermCalendar.newYork).toInstant().toEpochMilli()
+
+private fun utcMidnightMillis(date: LocalDate): Long =
+    date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
 
 private fun primaryCalendarId(context: Context): Long? {
     val projection = arrayOf(CalendarContract.Calendars._ID, CalendarContract.Calendars.IS_PRIMARY)
