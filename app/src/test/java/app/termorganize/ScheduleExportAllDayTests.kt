@@ -6,10 +6,13 @@ package app.termorganize
 import android.provider.CalendarContract
 import app.termorganize.logic.schedule.ScheduleExportEvent
 import app.termorganize.logic.schedule.ScheduleExporter
+import app.termorganize.logic.schedule.calendarText
 import app.termorganize.logic.schedule.contentValues
 import java.time.LocalDate
 import java.time.ZoneOffset
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -86,5 +89,23 @@ class ScheduleExportAllDayTests {
     fun recurringTimedRruleUntilKeepsNewYorkEndOfDay() {
         // 23:59:59 EDT on 2026-04-27 is 03:59:59Z on 2026-04-28.
         assertEquals("20260428T035959Z", untilOf(recurring(9 * 60, 10 * 60)))
+    }
+
+    private fun icsRrule(event: ScheduleExportEvent): String =
+        ScheduleExporter.calendarText(listOf(event), "Test", 0L)
+            .split("\r\n").first { it.startsWith("RRULE:") }
+
+    @Test
+    fun icsAllDayRecurringUntilIsPlainDate() {
+        val rrule = icsRrule(recurring(null, null))
+        assertTrue(rrule, rrule.contains("UNTIL=20260427"))
+        assertFalse(rrule, rrule.substringAfter("UNTIL=").contains("T"))
+        assertEquals("20260427", rrule.substringAfter("UNTIL="))
+    }
+
+    @Test
+    fun icsTimedRecurringUntilKeepsUtcDateTime() {
+        val rrule = icsRrule(recurring(9 * 60, 10 * 60))
+        assertTrue(rrule, rrule.contains("UNTIL=20260428T035959Z"))
     }
 }

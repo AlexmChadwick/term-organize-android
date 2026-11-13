@@ -206,7 +206,12 @@ fun ScheduleExporter.calendarText(events: List<ScheduleExportEvent>, calendarNam
         }
         if (event.isRecurring) {
             val days = event.weekdays.joinToString(",") { weekdayCodes[it] }
-            lines += "RRULE:FREQ=WEEKLY;BYDAY=$days;UNTIL=${untilStamp(event.lastYear!!, event.lastMonth!!, event.lastDay!!)}"
+            val until = if (start != null && end != null) {
+                untilStamp(event.lastYear!!, event.lastMonth!!, event.lastDay!!)
+            } else {
+                dateStamp(event.lastYear!!, event.lastMonth!!, event.lastDay!!)
+            }
+            lines += "RRULE:FREQ=WEEKLY;BYDAY=$days;UNTIL=$until"
         }
         lines += "SUMMARY:${escapeIcs(event.title)}"
         event.location?.let { lines += "LOCATION:${escapeIcs(it)}" }
