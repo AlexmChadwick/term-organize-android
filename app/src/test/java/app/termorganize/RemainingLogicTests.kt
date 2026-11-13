@@ -50,6 +50,7 @@ import app.termorganize.logic.offering.OfferingFetching
 import app.termorganize.logic.offering.OfferingHistory
 import app.termorganize.logic.offering.OfferingHistoryRepository
 import app.termorganize.logic.degree.SchedulePlan
+import app.termorganize.logic.schedule.ScheduleExportEvent
 import app.termorganize.logic.schedule.ScheduleExporter
 import app.termorganize.logic.schedule.calendarText
 import app.termorganize.logic.schedule.contentValues
@@ -1058,6 +1059,18 @@ class ScheduleCalendarTests {
         assertEquals(3, Regex("BEGIN:VEVENT").findAll(text).count())
         assertTrue(text.contains("CS 3000 Final Exam"))
         assertTrue(text.contains("RRULE:FREQ=WEEKLY;BYDAY=MO,WE"))
+    }
+
+    @Test fun allDayEndIsNextCalendarMidnightAcrossDaylightSavingChange() {
+        // 2026-11-01 is 25 hours long in America/New_York, so midnight + 24 hours is not the next date.
+        val event = ScheduleExportEvent(
+            uid = "all-day", title = "Exam", location = null, notes = "",
+            year = 2026, month = 11, day = 1, startMinute = null, endMinute = null, isFinalExam = true,
+        )
+        val values = ScheduleExporter.contentValues(event, 7)
+        val zone = java.time.ZoneId.of("America/New_York")
+        val expectedEnd = java.time.LocalDate.of(2026, 11, 2).atStartOfDay(zone).toInstant().toEpochMilli()
+        assertEquals(expectedEnd, values.getAsLong(CalendarContract.Events.DTEND))
     }
 }
 
