@@ -63,4 +63,28 @@ class ScheduleExportAllDayTests {
         assertEquals("America/New_York", values.getAsString(CalendarContract.Events.EVENT_TIMEZONE))
         assertEquals(0, values.getAsInteger(CalendarContract.Events.ALL_DAY))
     }
+
+    private fun recurring(startMinute: Int?, endMinute: Int?) = allDay(2026, 1, 12).copy(
+        startMinute = startMinute,
+        endMinute = endMinute,
+        weekdays = listOf(1, 3),
+        lastYear = 2026,
+        lastMonth = 4,
+        lastDay = 27,
+    )
+
+    private fun untilOf(event: ScheduleExportEvent): String =
+        ScheduleExporter.contentValues(event, 1L).getAsString(CalendarContract.Events.RRULE)
+            .split(";").first { it.startsWith("UNTIL=") }.removePrefix("UNTIL=")
+
+    @Test
+    fun recurringAllDayRruleUntilIsLastDayUtcMidnight() {
+        assertEquals("20260427T000000Z", untilOf(recurring(null, null)))
+    }
+
+    @Test
+    fun recurringTimedRruleUntilKeepsNewYorkEndOfDay() {
+        // 23:59:59 EDT on 2026-04-27 is 03:59:59Z on 2026-04-28.
+        assertEquals("20260428T035959Z", untilOf(recurring(9 * 60, 10 * 60)))
+    }
 }

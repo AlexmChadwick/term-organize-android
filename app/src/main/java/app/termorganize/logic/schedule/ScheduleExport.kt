@@ -291,7 +291,12 @@ private fun duration(minutes: Int): String {
 
 private fun rrule(event: ScheduleExportEvent): String {
     val days = event.weekdays.joinToString(",") { weekdayCodes[it] }
-    val until = untilStamp(event.lastYear ?: event.year, event.lastMonth ?: event.month, event.lastDay ?: event.day)
+    val year = event.lastYear ?: event.year
+    val month = event.lastMonth ?: event.month
+    val day = event.lastDay ?: event.day
+    // All-day DTSTART is UTC midnight, so UNTIL must be lastDay 00:00:00Z or the New York end of day adds an extra occurrence.
+    val allDay = event.startMinute == null || event.endMinute == null
+    val until = if (allDay) utcStamp(utcMidnightMillis(LocalDate.of(year, month, day))) else untilStamp(year, month, day)
     return "FREQ=WEEKLY;BYDAY=$days;UNTIL=$until"
 }
 
