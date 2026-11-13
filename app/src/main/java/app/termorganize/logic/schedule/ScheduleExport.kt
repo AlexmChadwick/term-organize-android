@@ -134,8 +134,12 @@ fun ScheduleExporter.contentValues(event: ScheduleExportEvent, calendarId: Long)
         values.put(CalendarContract.Events.ALL_DAY, 1)
         val day = LocalDate.of(event.year, event.month, event.day)
         values.put(CalendarContract.Events.DTSTART, utcMidnightMillis(day))
-        values.put(CalendarContract.Events.DTEND, utcMidnightMillis(day.plusDays(1)))
-        if (event.isRecurring) values.put(CalendarContract.Events.RRULE, rrule(event))
+        if (event.isRecurring) {
+            values.put(CalendarContract.Events.DURATION, "P1D")
+            values.put(CalendarContract.Events.RRULE, rrule(event))
+        } else {
+            values.put(CalendarContract.Events.DTEND, utcMidnightMillis(day.plusDays(1)))
+        }
     }
     return values
 }

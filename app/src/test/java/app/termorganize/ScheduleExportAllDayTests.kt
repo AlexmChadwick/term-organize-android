@@ -91,6 +91,24 @@ class ScheduleExportAllDayTests {
         assertEquals("20260428T035959Z", untilOf(recurring(9 * 60, 10 * 60)))
     }
 
+    @Test
+    fun recurringAllDayUsesDurationAndNoDtend() {
+        val values = ScheduleExporter.contentValues(recurring(null, null), 1L)
+        assertEquals("P1D", values.getAsString(CalendarContract.Events.DURATION))
+        assertFalse(values.containsKey(CalendarContract.Events.DTEND))
+        assertEquals(1, values.getAsInteger(CalendarContract.Events.ALL_DAY))
+        assertEquals("UTC", values.getAsString(CalendarContract.Events.EVENT_TIMEZONE))
+        assertTrue(values.containsKey(CalendarContract.Events.RRULE))
+    }
+
+    @Test
+    fun nonRecurringAllDayKeepsDtendAndNoDuration() {
+        val values = ScheduleExporter.contentValues(allDay(2026, 1, 12), 1L)
+        assertTrue(values.containsKey(CalendarContract.Events.DTEND))
+        assertFalse(values.containsKey(CalendarContract.Events.DURATION))
+        assertFalse(values.containsKey(CalendarContract.Events.RRULE))
+    }
+
     private fun icsRrule(event: ScheduleExportEvent): String =
         ScheduleExporter.calendarText(listOf(event), "Test", 0L)
             .split("\r\n").first { it.startsWith("RRULE:FREQ=WEEKLY") }
