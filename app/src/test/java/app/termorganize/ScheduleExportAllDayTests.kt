@@ -93,7 +93,7 @@ class ScheduleExportAllDayTests {
 
     private fun icsRrule(event: ScheduleExportEvent): String =
         ScheduleExporter.calendarText(listOf(event), "Test", 0L)
-            .split("\r\n").first { it.startsWith("RRULE:") }
+            .split("\r\n").first { it.startsWith("RRULE:FREQ=WEEKLY") }
 
     @Test
     fun icsAllDayRecurringUntilIsPlainDate() {
