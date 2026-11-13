@@ -1062,15 +1062,25 @@ class ScheduleCalendarTests {
     }
 
     @Test fun allDayEndIsNextCalendarMidnightAcrossDaylightSavingChange() {
-        // 2026-11-01 is 25 hours long in America/New_York, so midnight + 24 hours is not the next date.
+        // 2026-11-01 is 25 hours long in America/New_York. All-day events use UTC midnights
+        // (EVENT_TIMEZONE "UTC"), so the span must stay exactly 24 hours and not follow New York.
         val event = ScheduleExportEvent(
             uid = "all-day", title = "Exam", location = null, notes = "",
             year = 2026, month = 11, day = 1, startMinute = null, endMinute = null, isFinalExam = true,
         )
         val values = ScheduleExporter.contentValues(event, 7)
-        val zone = java.time.ZoneId.of("America/New_York")
-        val expectedEnd = java.time.LocalDate.of(2026, 11, 2).atStartOfDay(zone).toInstant().toEpochMilli()
-        assertEquals(expectedEnd, values.getAsLong(CalendarContract.Events.DTEND))
+        val date = java.time.LocalDate.of(2026, 11, 1)
+        val expectedStart = date.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val expectedEnd = date.plusDays(1).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+        val start = values.getAsLong(CalendarContract.Events.DTSTART)
+        val end = values.getAsLong(CalendarContract.Events.DTEND)
+        assertEquals(1, values.getAsInteger(CalendarContract.Events.ALL_DAY))
+        assertEquals("UTC", values.getAsString(CalendarContract.Events.EVENT_TIMEZONE))
+        assertEquals(expectedStart, start)
+        assertEquals(expectedEnd, end)
+        assertEquals(86_400_000L, end - start)
+        assertEquals(0L, start % 86_400_000L)
+        assertEquals(0L, end % 86_400_000L)
     }
 }
 
