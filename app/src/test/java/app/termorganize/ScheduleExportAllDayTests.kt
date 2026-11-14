@@ -33,6 +33,9 @@ class ScheduleExportAllDayTests {
         endMinute = null,
     )
 
+    private fun utcMidnightMillis(date: LocalDate) =
+        date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
     private fun assertUtcMidnights(year: Int, month: Int, day: Int) {
         val values = ScheduleExporter.contentValues(allDay(year, month, day), 1L)
         val date = LocalDate.of(year, month, day)
@@ -42,8 +45,8 @@ class ScheduleExportAllDayTests {
         assertEquals("UTC", values.getAsString(CalendarContract.Events.EVENT_TIMEZONE))
         assertEquals(0L, start % 86_400_000L)
         assertEquals(0L, end % 86_400_000L)
-        assertEquals(date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), start)
-        assertEquals(date.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(), end)
+        assertEquals(utcMidnightMillis(date), start)
+        assertEquals(utcMidnightMillis(date.plusDays(1)), end)
         assertEquals(86_400_000L, end - start)
     }
 
@@ -98,13 +101,17 @@ class ScheduleExportAllDayTests {
         assertFalse(values.containsKey(CalendarContract.Events.DTEND))
         assertEquals(1, values.getAsInteger(CalendarContract.Events.ALL_DAY))
         assertEquals("UTC", values.getAsString(CalendarContract.Events.EVENT_TIMEZONE))
-        assertTrue(values.containsKey(CalendarContract.Events.RRULE))
+        assertEquals(utcMidnightMillis(LocalDate.of(2026, 1, 12)), values.getAsLong(CalendarContract.Events.DTSTART))
+        assertTrue(values.getAsString(CalendarContract.Events.RRULE).contains("UNTIL=20260427T000000Z"))
     }
 
     @Test
     fun nonRecurringAllDayKeepsDtendAndNoDuration() {
         val values = ScheduleExporter.contentValues(allDay(2026, 1, 12), 1L)
-        assertTrue(values.containsKey(CalendarContract.Events.DTEND))
+        // Jan 12 2026 event: DTSTART is Jan 12 00:00Z, DTEND is Jan 13 00:00Z.
+        assertEquals(utcMidnightMillis(LocalDate.of(2026, 1, 12)), values.getAsLong(CalendarContract.Events.DTSTART))
+        assertEquals(1_768_262_400_000L, values.getAsLong(CalendarContract.Events.DTEND))
+        assertEquals(utcMidnightMillis(LocalDate.of(2026, 1, 13)), values.getAsLong(CalendarContract.Events.DTEND))
         assertFalse(values.containsKey(CalendarContract.Events.DURATION))
         assertFalse(values.containsKey(CalendarContract.Events.RRULE))
     }
