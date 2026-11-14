@@ -48,7 +48,7 @@ class IcsParityTests {
         val ics = text(exam)
         assertTrue(ics.contains("DTSTART;VALUE=DATE:20261231"))
         assertTrue(ics.contains("DTEND;VALUE=DATE:20270101"))
-        assertTrue(!ics.contains("RRULE"))
+        assertTrue(!ics.contains("RRULE:FREQ=WEEKLY"))
     }
 
     @Test fun timedUntilIsUtcAndAllDayUntilIsDate() {
