@@ -224,7 +224,7 @@ fun ScheduleExporter.calendarText(events: List<ScheduleExportEvent>, calendarNam
         lines += "END:VEVENT"
     }
     lines += "END:VCALENDAR"
-    return lines.joinToString("\r\n") + "\r\n"
+    return lines.joinToString("\r\n") { foldIcs(it) } + "\r\n"
 }
 
 private fun weeklyEvent(
@@ -344,6 +344,28 @@ private fun escapeIcs(text: String) = text
     .replace(",", "\\,")
     .replace("\r\n", "\\n")
     .replace("\n", "\\n")
+
+/** Folds a content line to at most 75 octets per physical line, never splitting a character. */
+private fun foldIcs(line: String): String {
+    if (line.toByteArray(Charsets.UTF_8).size <= 75) return line
+    val result = StringBuilder()
+    var bytes = 0
+    var limit = 75
+    var index = 0
+    while (index < line.length) {
+        val point = line.codePointAt(index)
+        val size = String(Character.toChars(point)).toByteArray(Charsets.UTF_8).size
+        if (bytes + size > limit) {
+            result.append("\r\n ")
+            bytes = 0
+            limit = 74
+        }
+        result.appendCodePoint(point)
+        bytes += size
+        index += Character.charCount(point)
+    }
+    return result.toString()
+}
 
 private fun dateStamp(year: Int, month: Int, day: Int) = "%04d%02d%02d".format(Locale.US, year, month, day)
 
