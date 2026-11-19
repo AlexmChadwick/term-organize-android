@@ -19,6 +19,8 @@ import app.termorganize.logic.degree.PlanSeason
 import app.termorganize.logic.degree.ScheduleAutofillSuggestion
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserDataStore
+import app.termorganize.logic.professors.CourseColors
+import app.termorganize.logic.schedule.CalendarEvent
 import app.termorganize.logic.schedule.BlockedTime
 import app.termorganize.logic.schedule.GeneratedSchedule
 import app.termorganize.logic.schedule.PlanEditing
@@ -49,6 +51,60 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScheduleSupportTests {
+    @Test fun resolvedEventsExpandAndFoldWeeklyBlocksFromPinnedAndLinkedSections() {
+        val lecture = section("A1", "CS", "3000", listOf(1, 3), 10.0, 11.0)
+        val first = lecture.meetings.single().copy(startDate = "2026-09-09", endDate = "2026-10-14")
+        val listed = lecture.copy(meetings = listOf(
+            first,
+            first.copy(startDate = "2026-10-15", endDate = "2026-12-10"),
+            first.copy(days = DaySet.MONDAY, room = "211"),
+            first.copy(kind = "Final Exam"),
+            first.copy(start = null),
+        ))
+        val lab = section("A2", "CS", "3000", listOf(5), 11.0, 12.0).copy(
+            classType = "Lab",
+            meetings = listOf(Meeting(DaySet.FRIDAY, 660, 720, campusCode = "VTL")),
+        )
+        val untimed = lecture.copy(crn = "A3", meetings = listOf(first.copy(kind = "Final Exam")))
+        val orphan = section("B1", "MATH", "2331", listOf(1), 10.0, 11.0)
+        val base = plan(listOf("CS 3000"), listOf("A2", "A1", "A3", "B1", "missing"))
+        val pinned = base.copy(courses = listOf(base.courses.single().copy(crn = "A1", colorIndex = 3)))
+        val catalog = index(listOf(course("CS", "3000")), listOf(listed, lab, untimed, orphan))
+        val resolved = ResolvedPlan(pinned, catalog)
+        val color = CourseColors.at(3)
+        assertEquals(listOf(
+            CalendarEvent("A1-0-1-600", "CS 3000", "WVH 210", "Lecture", 1, 600, 660, color, "A1", first.startDate, first.endDate),
+            CalendarEvent("A1-0-3-600", "CS 3000", "WVH 210", "Lecture", 3, 600, 660, color, "A1", first.startDate, first.endDate),
+            CalendarEvent("A1-2-1-600", "CS 3000", "WVH 211", "Lecture", 1, 600, 660, color, "A1", first.startDate, first.endDate),
+            CalendarEvent("A2-0-5-660", "CS 3000", "Online", "Lab", 5, 660, 720, color, "A2", null, null),
+        ), resolved.events)
+        assertEquals(listOf("A3"), resolved.untimed.map { it.section.crn })
+        assertEquals(listOf("B1"), resolved.orphanedCRNs)
+        assertEquals(listOf("missing"), resolved.unlistedCRNs)
+        assertTrue(ResolvedPlan(pinned, null).events.isEmpty())
+    }
+
+    @Test fun resolvedEventsUseEachPinnedRowsColorAndMarkOnlyActualOverlaps() {
+        val early = section("A1", "CS", "3000", listOf(1, 3), 10.0, 11.0)
+        val slot = early.meetings.single().copy(endDate = "2026-10-14")
+        val a = early.copy(meetings = listOf(slot))
+        val b = early.copy(crn = "A2", meetings = listOf(slot.copy(days = DaySet.MONDAY, startDate = "2026-10-15", endDate = null)))
+        val c = section("B1", "MATH", "2331", listOf(1), 10.5, 11.0)
+        val overlap = c.copy(meetings = listOf(c.meetings.single().copy(endDate = "2026-10-14")))
+        val backToBack = c.copy(crn = "B2", meetings = listOf(c.meetings.single().copy(start = 660, end = 720)))
+        val base = plan(listOf("CS 3000", "CS 3000", "MATH 2331"), listOf("B1", "A2", "B2", "A1"))
+        val pinned = base.copy(courses = listOf(
+            base.courses[0].copy(crn = "A1"),
+            base.courses[1].copy(crn = "A2"),
+            base.courses[2],
+        ))
+        val catalog = index(listOf(course("CS", "3000"), course("MATH", "2331")), listOf(a, b, overlap, backToBack))
+        val events = ResolvedPlan(pinned, catalog).events
+        assertEquals(listOf("A1", "A1", "A2", "B1", "B2"), events.map { it.payload })
+        assertEquals(listOf(0, 0, 1, 2, 2).map(CourseColors::at), events.map { it.color })
+        assertEquals(listOf(true, false, false, true, false), events.map { it.isConflict })
+    }
+
     @Test fun warningsListWhatNeedsAttention() {
         val index = clashingIndex()
         val resolved = ResolvedPlan(plan(listOf("CS 3000", "MATH 2331", "ENGW 1111"), listOf("A1", "B1")), index)
