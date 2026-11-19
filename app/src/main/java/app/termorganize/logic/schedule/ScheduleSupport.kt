@@ -23,6 +23,7 @@ import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserDataStore
 import app.termorganize.logic.degree.DegreePlanAutofill
 import app.termorganize.logic.offering.OfferingHistory
+import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.search.CatalogIndex
 import java.time.LocalTime
 import kotlin.math.ceil
@@ -221,6 +222,8 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
     val unlistedCRNs: List<String>
     val orphanedCRNs: List<String>
     val selectedSections: List<CourseSection>
+    val events: List<CalendarEvent>
+    val untimed: List<SectionPair>
     val conflicts: List<ScheduleConflict>
     val fullSections: List<SectionPair>
     val missingCourses: List<CourseKey>
@@ -233,25 +236,23 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         }
         val built = ArrayList<Entry>()
         val claimed = HashSet<String>()
-        val pinnedElsewhere = plan.courses.mapNotNull { it.manualCRN }.toSet()
-        for (planCourse in plan.courses) {
+        for ((row, planCourse) in plan.courses.withIndex()) {
             val all = index?.sections(planCourse.key).orEmpty()
-            val pin = planCourse.manualCRN
-            val selected = if (pin != null) {
-                val section = bySection[pin]
-                if (section != null) {
-                    claimed += pin
-                    listOf(section)
-                } else emptyList()
-            } else {
-                plan.selectedCRNs.mapNotNull { crn ->
-                    if (crn in claimed || crn in pinnedElsewhere) return@mapNotNull null
-                    val section = bySection[crn] ?: return@mapNotNull null
-                    if (section.courseKey != planCourse.key) return@mapNotNull null
-                    claimed += crn
-                    section
-                }
+            val siblings = plan.courses.filterIndexed { position, course ->
+                position != row && course.key == planCourse.key
             }
+            val siblingPins = siblings.mapNotNull { it.manualCRN }.toSet()
+            val pinned = planCourse.manualCRN?.let(bySection::get)?.takeIf { it.courseKey == planCourse.key }
+            val selected = if (pinned != null && siblings.isNotEmpty()) {
+                listOf(pinned)
+            } else {
+                val otherSections = plan.selectedCRNs.distinct().mapNotNull { crn ->
+                    if (crn == pinned?.crn || crn in siblingPins) return@mapNotNull null
+                    bySection[crn]?.takeIf { it.courseKey == planCourse.key }
+                }
+                listOfNotNull(pinned) + otherSections
+            }
+            claimed += selected.map { it.crn }
             built += Entry(planCourse, index?.course(planCourse.key), all, selected, index != null)
         }
         entries = built
@@ -261,9 +262,19 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         val sections = entries.flatMap { it.selected }
         selectedSections = sections
         val full = ArrayList<SectionPair>()
+        val blocks = ArrayList<CalendarEvent>()
+        val withoutBlocks = ArrayList<SectionPair>()
         for (entry in entries) {
-            for (section in entry.selected) if (section.isFull) full += SectionPair(entry, section)
+            val color = CourseColors.at(entry.planCourse.colorIndex)
+            for (section in entry.selected) {
+                val sectionBlocks = CalendarEvent.forSection(section, color)
+                if (sectionBlocks.isEmpty()) withoutBlocks += SectionPair(entry, section)
+                blocks += sectionBlocks
+                if (section.isFull) full += SectionPair(entry, section)
+            }
         }
+        events = CalendarEvent.markingConflicts(blocks)
+        untimed = withoutBlocks
         fullSections = full
         conflicts = ScheduleConflicts.find(sections)
         missingCourses = entries.filter { it.isMissing || it.hasNoSections }.map { it.key }

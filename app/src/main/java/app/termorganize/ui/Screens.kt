@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -141,6 +142,7 @@ import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.professors.ProfessorPage
 import app.termorganize.logic.rooms.LegalText
 import app.termorganize.logic.rooms.RoomAvailability
+import app.termorganize.logic.schedule.CalendarEvent
 import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerationResult
@@ -1086,8 +1088,7 @@ private fun ScheduleScreen(model: AppModel) {
                 TextButton(onClick = { model.forgetSections(plan.id, fix.removeSections) }) { Text(notice.fixTitle ?: "Remove") }
             }
         }
-        val selected = plan.selectedCRNs.mapNotNull { index?.section(it) }
-        WeekCalendar(selected, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
+        WeekCalendar(resolved.events, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
         plan.courses.forEachIndexed { rowIndex, course ->
@@ -1212,19 +1213,14 @@ private fun share(context: android.content.Context, uri: android.net.Uri, type: 
     context.startActivity(Intent.createChooser(intent, "Share"))
 }
 
-private data class PlacedMeeting(val section: CourseSection, val start: Int, val end: Int, val lane: Int, val lanes: Int)
+private data class PlacedMeeting(val event: CalendarEvent, val start: Int, val end: Int, val lane: Int, val lanes: Int)
 
-private fun placeMeetings(sections: List<CourseSection>, day: Int, windowStart: Int, windowEnd: Int): List<PlacedMeeting> {
-    val items = sections.flatMap { section ->
-        section.weeklyMeetings.filter { it.days.contains(day) }.mapNotNull { meeting ->
-            val start = meeting.start ?: return@mapNotNull null
-            val end = meeting.end ?: return@mapNotNull null
-            if (end <= windowStart || start >= windowEnd) null
-            else Triple(section, start.coerceAtLeast(windowStart), end.coerceAtMost(windowEnd))
-        }
-    }.sortedBy { it.second }
+private fun placeMeetings(events: List<CalendarEvent>, day: Int, windowStart: Int, windowEnd: Int): List<PlacedMeeting> {
+    val items = events.filter { it.day == day && it.end > windowStart && it.start < windowEnd }
+        .map { Triple(it, it.start.coerceAtLeast(windowStart), it.end.coerceAtMost(windowEnd)) }
+        .sortedBy { it.second }
     val laneEnds = mutableListOf<Int>()
-    val placed = items.map { (section, start, end) ->
+    val placed = items.map { (event, start, end) ->
         var lane = laneEnds.indexOfFirst { it <= start }
         if (lane < 0) {
             lane = laneEnds.size
@@ -1232,10 +1228,10 @@ private fun placeMeetings(sections: List<CourseSection>, day: Int, windowStart: 
         } else {
             laneEnds[lane] = end
         }
-        Triple(section, start to end, lane)
+        Triple(event, start to end, lane)
     }
     val count = laneEnds.size.coerceAtLeast(1)
-    return placed.map { (section, range, lane) -> PlacedMeeting(section, range.first, range.second, lane, count) }
+    return placed.map { (event, range, lane) -> PlacedMeeting(event, range.first, range.second, lane, count) }
 }
 
 private fun blockColors(argb: Int): Pair<Color, Color> {
@@ -1257,7 +1253,7 @@ private fun contrastRatio(background: Color, foreground: Color): Float {
 }
 
 @Composable
-private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, startHour: Int, endHour: Int) {
+private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, startHour: Int, endHour: Int) {
     val days = if (weekends) (0..6).toList() else (1..5).toList()
     val windowStart = startHour * 60
     val windowEnd = endHour * 60
@@ -1285,7 +1281,7 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
                 }
             }
             days.forEach { day ->
-                val placed = placeMeetings(sections, day, windowStart, windowEnd)
+                val placed = placeMeetings(events, day, windowStart, windowEnd)
                 Column(Modifier.width(dayWidth).padding(end = 4.dp)) {
                     Text(
                         DaySet.SHORT[day],
@@ -1310,7 +1306,9 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
                         placed.forEach { meeting ->
                             val top = ((meeting.start - windowStart) / span).coerceIn(0f, 1f)
                             val bottom = ((meeting.end - windowStart) / span).coerceIn(top, 1f)
-                            val (fill, label) = blockColors(CourseColors.forCode(meeting.section.courseKey.description))
+                            val (fill, label) = blockColors(meeting.event.color)
+                            val shape = RoundedCornerShape(6.dp)
+                            val conflictBorder = if (meeting.event.isConflict) Modifier.border(2.dp, scheme.error, shape) else Modifier
                             val fraction = (bottom - top).coerceAtLeast(0f)
                             BoxWithConstraints(Modifier.fillMaxSize()) {
                                 val laneWidth = maxWidth / meeting.lanes
@@ -1321,11 +1319,12 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
                                         .width(laneWidth)
                                         .height((maxHeight * fraction).coerceAtLeast(22.dp))
                                         .padding(2.dp)
-                                        .background(fill, RoundedCornerShape(6.dp))
+                                        .background(fill, shape)
+                                        .then(conflictBorder)
                                         .padding(horizontal = 4.dp, vertical = 2.dp),
                                 ) {
                                     Text(
-                                        "${meeting.section.courseKey.subject}\n${meeting.section.courseKey.number}",
+                                        meeting.event.title.replaceFirst(' ', '\n'),
                                         color = label,
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.SemiBold,
@@ -1874,7 +1873,10 @@ private fun ProfessorRoute(encoded: String, model: AppModel, back: () -> Unit) {
         ) { Text("Rate My Professors") }
         val colors = ProfessorPage.courseColors(person.courseKeys)
         Text("Teaching calendar", style = MaterialTheme.typography.titleMedium)
-        WeekCalendar(sections, false, 8, 21)
+        val events = sections.flatMap { section ->
+            CalendarEvent.forSection(section, CourseColors.forCode(section.courseKey.description))
+        }
+        WeekCalendar(events, false, 8, 21)
         sections.forEach { section ->
             val swatch = colors[section.courseKey] ?: CourseColors.at(0)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
