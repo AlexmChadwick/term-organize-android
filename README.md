@@ -6,6 +6,16 @@ This is a Kotlin and Jetpack Compose port of [Term Organize](https://github.com/
 
 The app is free software under the GNU Affero General Public License, version 3 only. Portions of the Banner client, catalog builder, requisites, schedule generator, and seat-alert rules are derived from [SearchNEU](https://github.com/sandboxnu/searchneu). See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). Course and catalog text is © Northeastern University and is not covered by the AGPL grant.
 
+## Platforms and status
+
+Term Organize is an unofficial project and is not affiliated with Northeastern University.
+
+- **macOS / iOS (Swift reference):** [AlexmChadwick/Northeastern-Term-Organize](https://github.com/AlexmChadwick/Northeastern-Term-Organize) - Mac app released, latest v1.1.3 at [github.com/AlexmChadwick/Northeastern-Term-Organize/releases](https://github.com/AlexmChadwick/Northeastern-Term-Organize/releases). iPhone and iPad builds are sideload only (test builds only, not on the App Store or TestFlight).
+- **Web:** [AlexmChadwick/term-organize-web](https://github.com/AlexmChadwick/term-organize-web) - port in development, test builds only, not in any store.
+- **Android:** [AlexmChadwick/term-organize-android](https://github.com/AlexmChadwick/term-organize-android) (this repository) - port in development, test builds only, not in any store.
+- **Linux:** [AlexmChadwick/term-organize-linux](https://github.com/AlexmChadwick/term-organize-linux) - port in development, test builds only, not in any store.
+- **Windows:** [AlexmChadwick/term-organize-windows](https://github.com/AlexmChadwick/term-organize-windows) - port in development, test builds only, not in any store.
+
 ## Install
 
 Term Organize is an early beta. It is unofficial and not affiliated with Northeastern University. It is not on Google Play.
