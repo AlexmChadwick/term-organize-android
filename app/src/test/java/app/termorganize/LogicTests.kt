@@ -65,11 +65,6 @@ import app.termorganize.logic.watchlist.WatchlistFormat
 import app.termorganize.logic.watchlist.WatchlistStatus
 import app.termorganize.logic.widget.WidgetMeeting
 import app.termorganize.logic.widget.WidgetScheduleData
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -588,28 +583,29 @@ class LogicTests {
         assertEquals("Algorithms and Data", catalog.courses.first { it.subject == "CS" && it.number == "3000" }.title)
     }
 
-    @Test fun spring2027FileContainsOnlyWorkEmailDomains() {
-        val text = GZIPInputStream(bundledCatalogFile("202730").inputStream()).use { it.readBytes() }.decodeToString()
-        val sections = Json.parseToJsonElement(text).jsonObject.getValue("sections").jsonArray
+    @Test fun bundledFilesContainOnlyInstitutionalEmailDomains() {
+        val directory = requireNotNull(bundledCatalogFile("202730").parentFile)
+        val files = directory.listFiles().orEmpty().filter { Regex("""term-\d{6}\.json(?:\.gz)?""").matches(it.name) }
+        assertTrue(files.map { it.name }.containsAll(listOf("term-202710.json.gz", "term-202730.json.gz")))
+        val address = Regex("""[\w.!#$%&'*+/=?^`{|}~-]+@([\w-]+(?:\.[\w-]+)*)""")
         val allowed = setOf("northeastern.edu", "neu.edu")
-        var addresses = 0
-        for (section in sections) {
-            val instructors = section.jsonObject["instructors"]?.jsonArray ?: continue
-            for (person in instructors) {
-                val email = person.jsonObject["email"] ?: continue
-                assertTrue(email is JsonPrimitive && email.isString)
-                val raw = email.jsonPrimitive.content
-                assertTrue(raw.isNotBlank())
-                val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                assertTrue(tokens.isNotEmpty())
-                for (token in tokens) {
-                    val domain = token.substringAfter('@', missingDelimiterValue = "").lowercase()
-                    assertTrue("bundled 202730 email domain: $domain", domain in allowed)
-                    addresses++
-                }
+        for (file in files) {
+            val text = if (file.name.endsWith(".gz")) {
+                GZIPInputStream(file.inputStream()).bufferedReader().use { it.readText() }
+            } else {
+                file.readText()
             }
+            val domains = address.findAll(text).map { it.groupValues[1].lowercase() }.toSet()
+            assertTrue(file.name, domains.isNotEmpty())
+            assertTrue("${file.name}: ${domains - allowed}", allowed.containsAll(domains))
         }
-        assertTrue(addresses > 0)
+    }
+
+    @Test fun instructorEmailRequiresAnExactInstitutionalDomain() {
+        assertNull(Instructor.institutionalEmail("test@husky.neu.edu"))
+        assertNull(Instructor.institutionalEmail("test@ece.northeastern.edu"))
+        assertNull(Instructor.institutionalEmail("test@example.com"))
+        assertEquals("test@NEU.edu", Instructor.institutionalEmail("test@example.com, test@NEU.edu"))
     }
 
     companion object {

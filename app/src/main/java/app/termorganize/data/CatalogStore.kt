@@ -23,13 +23,15 @@ class CatalogStore(
     fun load(code: String): TermCatalog? {
         val downloaded = read(File(directory, fileName(code)))
         val snapshot = runCatching { bundled(code) }.getOrNull()
-        return listOfNotNull(downloaded, snapshot).maxWithOrNull(compareBy({ freshness(it).first }, { freshness(it).second }))
+        return listOfNotNull(downloaded, snapshot)
+            .maxWithOrNull(compareBy({ freshness(it).first }, { freshness(it).second }))
+            ?.withInstitutionalInstructorEmails()
     }
 
     fun save(catalog: TermCatalog) {
         directory.mkdirs()
         val file = File(directory, fileName(catalog.term.code))
-        file.writeText(AppJson.catalog.encodeToString(TermCatalog.serializer(), catalog))
+        file.writeText(AppJson.catalog.encodeToString(TermCatalog.serializer(), catalog.withInstitutionalInstructorEmails()))
     }
 
     fun localCodes(): List<String> {

@@ -297,6 +297,15 @@ data class Instructor(
     val displayName: String get() = displayName(name)
 
     companion object {
+        private val workEmail = Regex("""[^\s@]+@(?:northeastern\.edu|neu\.edu)""", RegexOption.IGNORE_CASE)
+        private val emailSeparators = Regex("""[\s,;<>]+""")
+
+        fun institutionalEmail(email: String?): String? = email
+            ?.split(emailSeparators)
+            ?.filter(workEmail::matches)
+            ?.joinToString(" ")
+            ?.takeIf { it.isNotEmpty() }
+
         fun displayName(raw: String): String {
             val parts = raw.split(",", limit = 2).map { it.trim() }
             if (parts.size != 2 || parts[1].isEmpty()) return raw.trim()
@@ -420,6 +429,13 @@ data class TermCatalog(
     val attributes: List<AttributeInfo> = emptyList(),
     val campuses: List<Campus> = emptyList(),
 ) {
+    internal fun withInstitutionalInstructorEmails(): TermCatalog = copy(
+        sections = sections.map { section ->
+            val instructors = section.instructors ?: return@map section
+            section.copy(instructors = instructors.map { it.copy(email = Instructor.institutionalEmail(it.email)) })
+        },
+    )
+
     fun recomputePostreqs(): TermCatalog {
         val map = mutableMapOf<CourseKey, MutableSet<CourseKey>>()
         for (course in courses) {
