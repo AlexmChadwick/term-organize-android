@@ -329,7 +329,7 @@ fun TermOrganizeRoot(
                         route.startsWith("room/") -> RoomRoute(route.removePrefix("room/"), model) { route = "more/rooms" }
                         tab == Tab.Home -> HomeScreen(model, status, index == null) { route = it }
                         tab == Tab.Search -> SearchScreen(model, queryOf(route), { route = it }, listDetail = wideSearch)
-                        tab == Tab.Schedule -> ScheduleScreen(model)
+                        tab == Tab.Schedule -> ScheduleScreen(model) { route = it }
                         tab == Tab.Degree -> DegreeScreen(model, onImportPdf)
                         else -> MoreScreen(route, model, onImportJson) { route = it }
                     }
@@ -1035,7 +1035,7 @@ private fun RequisiteNode(node: Requisite, depth: Int, index: CatalogIndex?) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScheduleScreen(model: AppModel) {
+private fun ScheduleScreen(model: AppModel, open: (String) -> Unit) {
     val user by model.user.collectAsState()
     val index by model.index.collectAsState()
     val term = index?.term?.code
@@ -1093,35 +1093,7 @@ private fun ScheduleScreen(model: AppModel) {
             }
         }
         WeekCalendar(resolved.events, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
-        if (resolved.untimed.isNotEmpty()) {
-            Text("Online / TBA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
-            resolved.untimed.forEach { pair ->
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Box(Modifier.size(12.dp).background(Color(CourseColors.at(pair.entry.planCourse.colorIndex)), CircleShape))
-                    Column(Modifier.weight(1f)) {
-                        val sectionTitle = pair.section.title.takeIf { it.isNotBlank() }
-                        Text(
-                            listOfNotNull(pair.section.courseKey.description, sectionTitle).joinToString(" · "),
-                            style = MaterialTheme.typography.titleSmall,
-                        )
-                        Text(
-                            pair.section.scheduleSummary,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            Text(
-                "These sections don\u2019t meet at a set time, so they don\u2019t appear on the calendar.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        UntimedSections(resolved.untimed, open)
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
         plan.courses.forEachIndexed { rowIndex, course ->
@@ -1265,7 +1237,42 @@ private fun contrastRatio(background: Color, foreground: Color): Float {
 }
 
 @Composable
-private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, configuredStartHour: Int, configuredEndHour: Int) {
+internal fun UntimedSections(untimed: List<ResolvedPlan.SectionPair>, open: (String) -> Unit) {
+    if (untimed.isNotEmpty()) {
+        Text("Online / TBA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+        untimed.forEach { pair ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .testTag("untimed-row")
+                    .clickable(onClickLabel = "Open course") { open("course/${pair.section.courseKey.subject}/${pair.section.courseKey.number}") },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(12.dp).background(Color(CourseColors.at(pair.entry.planCourse.colorIndex)), CircleShape))
+                Column(Modifier.weight(1f)) {
+                    val sectionTitle = pair.section.title.takeIf { it.isNotBlank() }
+                    Text(
+                        listOfNotNull(pair.section.courseKey.description, sectionTitle).joinToString(" · "),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        pair.section.scheduleSummary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "These sections don\u2019t meet at a set time, so they don\u2019t appear on the calendar.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+internal fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, configuredStartHour: Int, configuredEndHour: Int) {
     val days = CalendarLayout.visibleDays(events, weekends)
     val hours = CalendarLayout.hourRange(events, configuredStartHour, configuredEndHour)
     val startHour = hours.start
@@ -1341,9 +1348,18 @@ private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, configu
                                         .then(conflictBorder)
                                         .padding(horizontal = 4.dp, vertical = 2.dp),
                                 ) {
-                                    Column {
+                                    if (meeting.event.isConflict) {
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(8.dp)
+                                                .testTag("conflict-marker")
+                                                .background(scheme.error, CircleShape),
+                                        )
+                                    }
+                                    Column(Modifier.padding(end = if (meeting.event.isConflict) 8.dp else 0.dp)) {
                                         Text(
-                                            (if (meeting.event.isConflict) "\u26A0 " else "") + meeting.event.title.replaceFirst(' ', '\n'),
+                                            meeting.event.title.replaceFirst(' ', '\n'),
                                             color = label,
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.SemiBold,

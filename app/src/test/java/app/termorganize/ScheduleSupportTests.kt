@@ -107,6 +107,31 @@ class ScheduleSupportTests {
         assertEquals(listOf(true, false, false, true, false), events.map { it.isConflict })
     }
 
+    @Test fun twoUnpinnedRowsWithTheSameCourseKeyDoNotDoubleSectionsBlocksOrConflicts() {
+        val a1 = section("A1", "CS", "3000", listOf(1, 3), 10.0, 11.0)
+        val a2 = section("A2", "CS", "3000", listOf(2, 4), 13.0, 14.0)
+        val catalog = index(listOf(course("CS", "3000")), listOf(a1, a2))
+        val resolved = ResolvedPlan(plan(listOf("CS 3000", "CS 3000"), listOf("A1", "A2")), catalog)
+        assertEquals(listOf("A1", "A2"), resolved.selectedSections.map { it.crn })
+        assertEquals(listOf("A1", "A1", "A2", "A2"), resolved.events.map { it.payload })
+        assertEquals(listOf(false, false, false, false), resolved.events.map { it.isConflict })
+        assertTrue(resolved.conflicts.isEmpty())
+        assertTrue(resolved.unlistedCRNs.isEmpty() && resolved.orphanedCRNs.isEmpty())
+        assertEquals(listOf("A1", "A2"), resolved.entries.flatMap { it.selected }.map { it.crn })
+    }
+
+    @Test fun anUnpinnedRowSkipsCrnsClaimedByALaterPinnedSiblingRow() {
+        val a1 = section("A1", "CS", "3000", listOf(1), 10.0, 11.0)
+        val a2 = section("A2", "CS", "3000", listOf(2), 10.0, 11.0)
+        val base = plan(listOf("CS 3000", "CS 3000"), listOf("A1", "A2"))
+        val pinned = base.copy(courses = listOf(base.courses[0], base.courses[1].copy(crn = "A2")))
+        val resolved = ResolvedPlan(pinned, index(listOf(course("CS", "3000")), listOf(a1, a2)))
+        assertEquals(listOf("A1"), resolved.entries[0].selected.map { it.crn })
+        assertEquals(listOf("A2"), resolved.entries[1].selected.map { it.crn })
+        assertEquals(listOf("A1", "A2"), resolved.selectedSections.map { it.crn })
+        assertTrue(resolved.conflicts.isEmpty())
+    }
+
     private fun windowed(crn: String, subject: String, number: String, vararg windows: Pair<String, String>): CourseSection {
         val base = section(crn, subject, number, listOf(1), 10.0, 11.0)
         val slot = base.meetings.single()

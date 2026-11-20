@@ -242,12 +242,13 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
                 position != row && course.key == planCourse.key
             }
             val siblingPins = siblings.mapNotNull { it.manualCRN }.toSet()
-            val pinned = planCourse.manualCRN?.let(bySection::get)?.takeIf { it.courseKey == planCourse.key }
+            val pinned = planCourse.manualCRN?.let(bySection::get)
+                ?.takeIf { it.courseKey == planCourse.key && it.crn !in claimed }
             val selected = if (pinned != null && siblings.isNotEmpty()) {
                 listOf(pinned)
             } else {
                 val otherSections = plan.selectedCRNs.distinct().mapNotNull { crn ->
-                    if (crn == pinned?.crn || crn in siblingPins) return@mapNotNull null
+                    if (crn == pinned?.crn || crn in siblingPins || crn in claimed) return@mapNotNull null
                     bySection[crn]?.takeIf { it.courseKey == planCourse.key }
                 }
                 listOfNotNull(pinned) + otherSections
@@ -259,7 +260,7 @@ class ResolvedPlan(val plan: SchedulePlan, index: CatalogIndex?) {
         val unclaimed = if (index == null) emptyList() else plan.selectedCRNs.filter { it !in claimed }
         unlistedCRNs = unclaimed.filter { bySection[it] == null }
         orphanedCRNs = unclaimed.filter { bySection[it] != null }
-        val sections = entries.flatMap { it.selected }
+        val sections = entries.flatMap { it.selected }.distinctBy { it.crn }
         selectedSections = sections
         val full = ArrayList<SectionPair>()
         val blocks = ArrayList<CalendarEvent>()
