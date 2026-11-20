@@ -73,4 +73,21 @@ class IcsParityTests {
         val ics = text(weekly())
         assertTrue(ics.contains("SUMMARY:CS 2500 Lecture\r\n"))
     }
+
+    @Test fun exportedRawBytesNormalizesLoneCrInCalendarNameAndLocation() {
+        val event = weekly().copy(location = "Snell\rLibrary 101")
+        val ics = ScheduleExporter.calendarText(listOf(event), "Fall\rPlan", 0L)
+        assertTrue(ics.contains("X-WR-CALNAME:Fall\\nPlan"))
+        assertTrue(ics.contains("LOCATION:Snell\\nLibrary 101"))
+        val bytes = ics.toByteArray(Charsets.UTF_8)
+        assertTrue(bytes.isNotEmpty())
+        for (i in bytes.indices) {
+            if (bytes[i] == '\r'.code.toByte()) {
+                assertTrue("CR at $i must be followed by LF", i + 1 < bytes.size && bytes[i + 1] == '\n'.code.toByte())
+            }
+            if (bytes[i] == '\n'.code.toByte()) {
+                assertTrue("LF at $i must be preceded by CR", i > 0 && bytes[i - 1] == '\r'.code.toByte())
+            }
+        }
+    }
 }

@@ -63,16 +63,16 @@ fun ScheduleExporter.events(plan: SchedulePlan, index: CatalogIndex): Pair<List<
         val section = index.section(crn) ?: continue
         selected.putIfAbsent(crn, section)
     }
-    val titles = plan.courses.associate { it.key to it.key.description }
     val summary = ScheduleExportSummary()
     val events = ArrayList<ScheduleExportEvent>()
     for (section in selected.values) {
         summary.classCount += 1
         val code = section.courseKey.description
-        val courseTitle = titles[section.courseKey] ?: section.title
+        val catalogTitle = index.course(section.courseKey)?.title.orEmpty()
+        val courseTitle = if (catalogTitle.isEmpty()) section.title else catalogTitle
         val notes = buildList {
-            add(if (courseTitle.isBlank()) section.title else courseTitle)
-            add("CRN ${section.crn} · ${section.sectionNumber.ifBlank { section.classType }}")
+            add(courseTitle)
+            add("CRN ${section.crn} · ${ScheduleFormat.sectionTitle(section)}")
             val instructors = section.instructorLabel
             if (instructors != "Instructor unavailable" && instructors != "TBA") add("Instructor: $instructors")
             add("Added from Term Organize")
@@ -87,8 +87,8 @@ fun ScheduleExporter.events(plan: SchedulePlan, index: CatalogIndex): Pair<List<
         }
         val exam = section.finalExam
         if (exam != null) {
-            val parts = isoParts(exam.startDate)
-            if (parts != null) {
+            val examDate = parseLocalDate(exam.startDate)
+            if (examDate != null) {
                 summary.finalExams += 1
                 val timed = exam.start != null && exam.end != null
                 events += ScheduleExportEvent(
@@ -96,9 +96,9 @@ fun ScheduleExporter.events(plan: SchedulePlan, index: CatalogIndex): Pair<List<
                     title = "$code Final Exam",
                     location = locationOf(exam, section),
                     notes = "Final exam\n$notes",
-                    year = parts[0],
-                    month = parts[1],
-                    day = parts[2],
+                    year = examDate.year,
+                    month = examDate.monthValue,
+                    day = examDate.dayOfMonth,
                     startMinute = if (timed) exam.start else null,
                     endMinute = if (timed) exam.end else null,
                     isFinalExam = true,
@@ -132,13 +132,19 @@ fun ScheduleExporter.contentValues(event: ScheduleExportEvent, calendarId: Long)
         }
     } else {
         values.put(CalendarContract.Events.ALL_DAY, 1)
-        val day = LocalDate.of(event.year, event.month, event.day)
-        values.put(CalendarContract.Events.DTSTART, utcMidnightMillis(day))
-        if (event.isRecurring) {
-            values.put(CalendarContract.Events.DURATION, "P1D")
-            values.put(CalendarContract.Events.RRULE, rrule(event))
-        } else {
-            values.put(CalendarContract.Events.DTEND, utcMidnightMillis(day.plusDays(1)))
+        val day = try {
+            LocalDate.of(event.year, event.month, event.day)
+        } catch (_: Exception) {
+            null
+        }
+        if (day != null) {
+            values.put(CalendarContract.Events.DTSTART, utcMidnightMillis(day))
+            if (event.isRecurring) {
+                values.put(CalendarContract.Events.DURATION, "P1D")
+                values.put(CalendarContract.Events.RRULE, rrule(event))
+            } else {
+                values.put(CalendarContract.Events.DTEND, utcMidnightMillis(day.plusDays(1)))
+            }
         }
     }
     return values
@@ -195,6 +201,11 @@ fun ScheduleExporter.calendarText(events: List<ScheduleExportEvent>, calendarNam
     )
     val stamp = utcStamp(nowMillis)
     for (event in events) {
+        val eventDate = try {
+            LocalDate.of(event.year, event.month, event.day)
+        } catch (_: Exception) {
+            null
+        } ?: continue
         lines += "BEGIN:VEVENT"
         lines += "UID:${event.uid}"
         lines += "DTSTAMP:$stamp"
@@ -205,15 +216,20 @@ fun ScheduleExporter.calendarText(events: List<ScheduleExportEvent>, calendarNam
             lines += "DTEND;TZID=America/New_York:${localStamp(event.year, event.month, event.day, end)}"
         } else {
             lines += "DTSTART;VALUE=DATE:${dateStamp(event.year, event.month, event.day)}"
-            val next = LocalDate.of(event.year, event.month, event.day).plusDays(1)
+            val next = eventDate.plusDays(1)
             lines += "DTEND;VALUE=DATE:${dateStamp(next.year, next.monthValue, next.dayOfMonth)}"
         }
         if (event.isRecurring) {
+            val lastDate = try {
+                LocalDate.of(event.lastYear!!, event.lastMonth!!, event.lastDay!!)
+            } catch (_: Exception) {
+                null
+            } ?: continue
             val days = event.weekdays.joinToString(",") { weekdayCodes[it] }
             val until = if (start != null && end != null) {
-                untilStamp(event.lastYear!!, event.lastMonth!!, event.lastDay!!)
+                untilStamp(lastDate.year, lastDate.monthValue, lastDate.dayOfMonth)
             } else {
-                dateStamp(event.lastYear!!, event.lastMonth!!, event.lastDay!!)
+                dateStamp(lastDate.year, lastDate.monthValue, lastDate.dayOfMonth)
             }
             lines += "RRULE:FREQ=WEEKLY;BYDAY=$days;UNTIL=$until"
         }
@@ -237,12 +253,10 @@ private fun weeklyEvent(
 ): ScheduleExportEvent? {
     val start = meeting.start ?: return null
     val end = meeting.end ?: return null
-    val startParts = isoParts(meeting.startDate) ?: return null
-    val endParts = isoParts(meeting.endDate) ?: return null
+    val startDay = parseLocalDate(meeting.startDate) ?: return null
+    val endDay = parseLocalDate(meeting.endDate) ?: return null
     val weekdays = meeting.days.indices
     if (weekdays.isEmpty()) return null
-    val startDay = LocalDate.of(startParts[0], startParts[1], startParts[2])
-    val endDay = LocalDate.of(endParts[0], endParts[1], endParts[2])
     val first = firstDay(startDay, weekdays) ?: return null
     if (first.isAfter(endDay)) return null
     return ScheduleExportEvent(
@@ -256,9 +270,9 @@ private fun weeklyEvent(
         startMinute = start,
         endMinute = end,
         weekdays = weekdays,
-        lastYear = endParts[0],
-        lastMonth = endParts[1],
-        lastDay = endParts[2],
+        lastYear = endDay.year,
+        lastMonth = endDay.monthValue,
+        lastDay = endDay.dayOfMonth,
     )
 }
 
@@ -277,14 +291,23 @@ private fun locationOf(meeting: Meeting, section: CourseSection): String? {
     return if (label == "Location TBA") null else label
 }
 
-private fun isoParts(iso: String?): IntArray? {
+private fun parseLocalDate(iso: String?): LocalDate? {
     if (iso.isNullOrBlank()) return null
     val parts = iso.split("-")
     if (parts.size < 3) return null
     val year = parts[0].toIntOrNull() ?: return null
     val month = parts[1].toIntOrNull() ?: return null
     val day = parts[2].take(2).toIntOrNull() ?: return null
-    return intArrayOf(year, month, day)
+    return try {
+        LocalDate.of(year, month, day)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun isoParts(iso: String?): IntArray? {
+    val date = parseLocalDate(iso) ?: return null
+    return intArrayOf(date.year, date.monthValue, date.dayOfMonth)
 }
 
 private fun duration(minutes: Int): String {
@@ -305,7 +328,16 @@ private fun rrule(event: ScheduleExportEvent): String {
     val day = event.lastDay ?: event.day
     // All-day DTSTART is UTC midnight, so UNTIL must be lastDay 00:00:00Z or the New York end of day adds an extra occurrence.
     val allDay = event.startMinute == null || event.endMinute == null
-    val until = if (allDay) utcStamp(utcMidnightMillis(LocalDate.of(year, month, day))) else untilStamp(year, month, day)
+    val until = if (allDay) {
+        val lastDate = try {
+            LocalDate.of(year, month, day)
+        } catch (_: Exception) {
+            null
+        }
+        if (lastDate != null) utcStamp(utcMidnightMillis(lastDate)) else untilStamp(year, month, day)
+    } else {
+        untilStamp(year, month, day)
+    }
     return "FREQ=WEEKLY;BYDAY=$days;UNTIL=$until"
 }
 
@@ -338,12 +370,14 @@ private fun primaryCalendarId(context: Context): Long? {
     }
 }
 
-private fun escapeIcs(text: String) = text
-    .replace("\\", "\\\\")
-    .replace(";", "\\;")
-    .replace(",", "\\,")
-    .replace("\r\n", "\\n")
-    .replace("\n", "\\n")
+private fun escapeIcs(text: String): String {
+    val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
+    return normalized
+        .replace("\\", "\\\\")
+        .replace(";", "\\;")
+        .replace(",", "\\,")
+        .replace("\n", "\\n")
+}
 
 /** Folds a content line to at most 75 octets per physical line, never splitting a character. */
 private fun foldIcs(line: String): String {
