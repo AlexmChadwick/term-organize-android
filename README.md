@@ -6,13 +6,21 @@ This is a Kotlin and Jetpack Compose port of [Term Organize](https://github.com/
 
 The app is free software under the GNU Affero General Public License, version 3 only. Portions of the Banner client, catalog builder, requisites, schedule generator, and seat-alert rules are derived from [SearchNEU](https://github.com/sandboxnu/searchneu). See [NOTICE.md](NOTICE.md) and [LICENSE](LICENSE). Course and catalog text is © Northeastern University and is not covered by the AGPL grant.
 
+## Platforms and status
+
+- **macOS / iOS (Swift reference):** [AlexmChadwick/Northeastern-Term-Organize](https://github.com/AlexmChadwick/Northeastern-Term-Organize) - Mac app released, latest v1.1.3 at [github.com/AlexmChadwick/Northeastern-Term-Organize/releases](https://github.com/AlexmChadwick/Northeastern-Term-Organize/releases). iPhone and iPad builds are sideload only (test builds only, not on the App Store or TestFlight).
+- **Web:** [AlexmChadwick/term-organize-web](https://github.com/AlexmChadwick/term-organize-web) - port in development, with no published release or store listing.
+- **Android:** [AlexmChadwick/term-organize-android](https://github.com/AlexmChadwick/term-organize-android) (this repository) - port in development, with no published release or store listing.
+- **Linux:** [AlexmChadwick/term-organize-linux](https://github.com/AlexmChadwick/term-organize-linux) - port in development, with no published release or store listing.
+- **Windows:** [AlexmChadwick/term-organize-windows](https://github.com/AlexmChadwick/term-organize-windows) - port in development, with no published release or store listing.
+
 ## Install
 
-Term Organize is an early beta. It is unofficial and not affiliated with Northeastern University. It is not on Google Play.
+The Android port is not on Google Play.
 
-1. When available, download `term-organize-<version>.apk` from the [Releases page](https://github.com/AlexmChadwick/term-organize-android/releases). Until then, build it yourself (see "Build and run" below).
-2. On your phone, allow your browser or file manager to install apps: Settings > Apps > Special app access > **Install unknown apps**.
-3. Open the APK and tap Install.
+1. Follow [Build and run](#build-and-run) to build `app/build/outputs/apk/debug/app-debug.apk`.
+2. Copy the locally built APK to your phone. In Settings > Apps > Special app access > **Install unknown apps**, allow the file manager to install it.
+3. Open the locally built APK in the file manager and tap Install.
 
 ## What it does
 
