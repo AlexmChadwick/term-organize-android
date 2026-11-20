@@ -37,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.layout.layout
@@ -105,6 +106,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -143,6 +146,7 @@ import app.termorganize.logic.professors.ProfessorPage
 import app.termorganize.logic.rooms.LegalText
 import app.termorganize.logic.rooms.RoomAvailability
 import app.termorganize.logic.schedule.CalendarEvent
+import app.termorganize.logic.schedule.CalendarLayout
 import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerationResult
@@ -1089,6 +1093,35 @@ private fun ScheduleScreen(model: AppModel) {
             }
         }
         WeekCalendar(resolved.events, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
+        if (resolved.untimed.isNotEmpty()) {
+            Text("Online / TBA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+            resolved.untimed.forEach { pair ->
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Box(Modifier.size(12.dp).background(Color(CourseColors.at(pair.entry.planCourse.colorIndex)), CircleShape))
+                    Column(Modifier.weight(1f)) {
+                        val sectionTitle = pair.section.title.takeIf { it.isNotBlank() }
+                        Text(
+                            listOfNotNull(pair.section.courseKey.description, sectionTitle).joinToString(" · "),
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        Text(
+                            pair.section.scheduleSummary,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Text(
+                "These sections don\u2019t meet at a set time, so they don\u2019t appear on the calendar.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
         plan.courses.forEachIndexed { rowIndex, course ->
@@ -1213,27 +1246,6 @@ private fun share(context: android.content.Context, uri: android.net.Uri, type: 
     context.startActivity(Intent.createChooser(intent, "Share"))
 }
 
-private data class PlacedMeeting(val event: CalendarEvent, val start: Int, val end: Int, val lane: Int, val lanes: Int)
-
-private fun placeMeetings(events: List<CalendarEvent>, day: Int, windowStart: Int, windowEnd: Int): List<PlacedMeeting> {
-    val items = events.filter { it.day == day && it.end > windowStart && it.start < windowEnd }
-        .map { Triple(it, it.start.coerceAtLeast(windowStart), it.end.coerceAtMost(windowEnd)) }
-        .sortedBy { it.second }
-    val laneEnds = mutableListOf<Int>()
-    val placed = items.map { (event, start, end) ->
-        var lane = laneEnds.indexOfFirst { it <= start }
-        if (lane < 0) {
-            lane = laneEnds.size
-            laneEnds += end
-        } else {
-            laneEnds[lane] = end
-        }
-        Triple(event, start to end, lane)
-    }
-    val count = laneEnds.size.coerceAtLeast(1)
-    return placed.map { (event, range, lane) -> PlacedMeeting(event, range.first, range.second, lane, count) }
-}
-
 private fun blockColors(argb: Int): Pair<Color, Color> {
     var color = Color(argb)
     val ink = Color(0xFF142226)
@@ -1253,8 +1265,11 @@ private fun contrastRatio(background: Color, foreground: Color): Float {
 }
 
 @Composable
-private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, startHour: Int, endHour: Int) {
-    val days = if (weekends) (0..6).toList() else (1..5).toList()
+private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, configuredStartHour: Int, configuredEndHour: Int) {
+    val days = CalendarLayout.visibleDays(events, weekends)
+    val hours = CalendarLayout.hourRange(events, configuredStartHour, configuredEndHour)
+    val startHour = hours.start
+    val endHour = hours.end
     val windowStart = startHour * 60
     val windowEnd = endHour * 60
     val span = (windowEnd - windowStart).coerceAtLeast(60).toFloat()
@@ -1281,7 +1296,7 @@ private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, startHo
                 }
             }
             days.forEach { day ->
-                val placed = placeMeetings(events, day, windowStart, windowEnd)
+                val placed = CalendarLayout.lanes(events.filter { it.day == day })
                 Column(Modifier.width(dayWidth).padding(end = 4.dp)) {
                     Text(
                         DaySet.SHORT[day],
@@ -1304,33 +1319,47 @@ private fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, startHo
                             }
                         }
                         placed.forEach { meeting ->
-                            val top = ((meeting.start - windowStart) / span).coerceIn(0f, 1f)
-                            val bottom = ((meeting.end - windowStart) / span).coerceIn(top, 1f)
+                            val top = ((meeting.event.start - windowStart) / span).coerceIn(0f, 1f)
+                            val bottom = ((meeting.event.end - windowStart) / span).coerceIn(top, 1f)
                             val (fill, label) = blockColors(meeting.event.color)
                             val shape = RoundedCornerShape(6.dp)
                             val conflictBorder = if (meeting.event.isConflict) Modifier.border(2.dp, scheme.error, shape) else Modifier
                             val fraction = (bottom - top).coerceAtLeast(0f)
                             BoxWithConstraints(Modifier.fillMaxSize()) {
-                                val laneWidth = maxWidth / meeting.lanes
+                                val laneWidth = maxWidth / meeting.count
+                                val blockHeight = (maxHeight * fraction).coerceAtLeast(22.dp)
+                                val description = CalendarLayout.accessibilityLabel(meeting.event)
                                 Box(
                                     Modifier
                                         .align(Alignment.TopStart)
-                                        .offset(x = laneWidth * meeting.lane, y = maxHeight * top)
+                                        .offset(x = laneWidth * meeting.index, y = maxHeight * top)
                                         .width(laneWidth)
-                                        .height((maxHeight * fraction).coerceAtLeast(22.dp))
+                                        .height(blockHeight)
+                                        .clearAndSetSemantics { contentDescription = description }
                                         .padding(2.dp)
                                         .background(fill, shape)
                                         .then(conflictBorder)
                                         .padding(horizontal = 4.dp, vertical = 2.dp),
                                 ) {
-                                    Text(
-                                        meeting.event.title.replaceFirst(' ', '\n'),
-                                        color = label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = if (fraction >= 0.08f) 2 else 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
+                                    Column {
+                                        Text(
+                                            (if (meeting.event.isConflict) "\u26A0 " else "") + meeting.event.title.replaceFirst(' ', '\n'),
+                                            color = label,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = if (blockHeight >= 40.dp) 2 else 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (blockHeight >= 64.dp && meeting.event.subtitle.isNotBlank()) {
+                                            Text(
+                                                meeting.event.subtitle,
+                                                color = label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

@@ -21,6 +21,7 @@ import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserDataStore
 import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.schedule.CalendarEvent
+import app.termorganize.logic.schedule.CalendarLayout
 import app.termorganize.logic.schedule.BlockedTime
 import app.termorganize.logic.schedule.GeneratedSchedule
 import app.termorganize.logic.schedule.PlanEditing
@@ -72,9 +73,10 @@ class ScheduleSupportTests {
         val catalog = index(listOf(course("CS", "3000")), listOf(listed, lab, untimed, orphan))
         val resolved = ResolvedPlan(pinned, catalog)
         val color = CourseColors.at(3)
+        val later = listOf(CalendarEvent.DateWindow("2026-10-15", "2026-12-10"))
         assertEquals(listOf(
-            CalendarEvent("A1-0-1-600", "CS 3000", "WVH 210", "Lecture", 1, 600, 660, color, "A1", first.startDate, first.endDate),
-            CalendarEvent("A1-0-3-600", "CS 3000", "WVH 210", "Lecture", 3, 600, 660, color, "A1", first.startDate, first.endDate),
+            CalendarEvent("A1-0-1-600", "CS 3000", "WVH 210", "Lecture", 1, 600, 660, color, "A1", first.startDate, first.endDate, laterWindows = later),
+            CalendarEvent("A1-0-3-600", "CS 3000", "WVH 210", "Lecture", 3, 600, 660, color, "A1", first.startDate, first.endDate, laterWindows = later),
             CalendarEvent("A1-2-1-600", "CS 3000", "WVH 211", "Lecture", 1, 600, 660, color, "A1", first.startDate, first.endDate),
             CalendarEvent("A2-0-5-660", "CS 3000", "Online", "Lab", 5, 660, 720, color, "A2", null, null),
         ), resolved.events)
@@ -103,6 +105,88 @@ class ScheduleSupportTests {
         assertEquals(listOf("A1", "A1", "A2", "B1", "B2"), events.map { it.payload })
         assertEquals(listOf(0, 0, 1, 2, 2).map(CourseColors::at), events.map { it.color })
         assertEquals(listOf(true, false, false, true, false), events.map { it.isConflict })
+    }
+
+    private fun windowed(crn: String, subject: String, number: String, vararg windows: Pair<String, String>): CourseSection {
+        val base = section(crn, subject, number, listOf(1), 10.0, 11.0)
+        val slot = base.meetings.single()
+        return base.copy(meetings = windows.map { (from, to) -> slot.copy(startDate = from, endDate = to) })
+    }
+
+    private fun resolvedEvents(a: CourseSection, b: CourseSection): List<CalendarEvent> {
+        val catalog = index(
+            listOf(course(a.courseKey.subject, a.courseKey.number), course(b.courseKey.subject, b.courseKey.number)),
+            listOf(a, b),
+        )
+        val chosen = plan(listOf(a.courseKey.description, b.courseKey.description), listOf(a.crn, b.crn))
+        return ResolvedPlan(chosen, catalog).events
+    }
+
+    @Test fun foldedRepeatsKeepEveryDateRangeSoALaterRangeStillConflicts() {
+        val early = "2026-09-14" to "2026-09-14"
+        val late = "2026-10-19" to "2026-10-19"
+        val first = windowed("A1", "BIOT", "5145", early, late)
+        val second = windowed("B1", "SCHM", "6418", late)
+        val events = resolvedEvents(first, second)
+        assertEquals(listOf("A1", "B1"), events.map { it.payload })
+        assertEquals(listOf(true, true), events.map { it.isConflict })
+        assertEquals(
+            listOf(CalendarEvent.DateWindow(early.first, early.second), CalendarEvent.DateWindow(late.first, late.second)),
+            events.first().dateWindows,
+        )
+        val reversed = resolvedEvents(windowed("A1", "BIOT", "5145", late, early), second)
+        assertEquals(listOf(true, true), reversed.map { it.isConflict })
+    }
+
+    @Test fun foldedRepeatsDoNotConflictInTheGapBetweenTheirRanges() {
+        val first = windowed("A1", "BIOT", "5145", "2026-09-14" to "2026-09-20", "2026-10-19" to "2026-10-25")
+        val second = windowed("B1", "SCHM", "6418", "2026-09-28" to "2026-10-04")
+        assertEquals(listOf(false, false), resolvedEvents(first, second).map { it.isConflict })
+    }
+
+    @Test fun identicalRepeatRangesFoldWithoutExtraWindows() {
+        val folded = CalendarEvent.forSection(windowed("A1", "BIOT", "5145", "2026-09-14" to "2026-09-20", "2026-09-14" to "2026-09-20"), 0)
+        assertEquals(1, folded.size)
+        assertTrue(folded.single().laterWindows.isEmpty())
+    }
+
+    private fun block(id: String, day: Int, start: Int, end: Int) =
+        CalendarEvent(id, "CS 3000", "Online", "Lecture", day, start, end, 0, id, null, null)
+
+    @Test fun laneCountIsPerOverlapGroupSoALoneBlockKeepsFullWidth() {
+        val crowded = (1..8).map { block("c$it", 1, 600, 660) }
+        val lone = block("lone", 1, 780, 840)
+        val chained = listOf(block("x", 1, 900, 960), block("y", 1, 930, 990))
+        val laned = CalendarLayout.lanes(crowded + lone + chained).associateBy { it.event.id }
+        assertEquals(1, laned.getValue("lone").count)
+        assertEquals(0, laned.getValue("lone").index)
+        crowded.forEach { assertEquals(8, laned.getValue(it.id).count) }
+        assertEquals(setOf(0, 1, 2, 3, 4, 5, 6, 7), crowded.map { laned.getValue(it.id).index }.toSet())
+        assertEquals(listOf(2, 2), chained.map { laned.getValue(it.id).count })
+        assertEquals(listOf(0, 1), chained.map { laned.getValue(it.id).index })
+    }
+
+    @Test fun gridWidensHoursAndAddsWeekendDaysForSelectedMeetings() {
+        val late = block("late", 1, 19 * 60, 21 * 60 + 30)
+        val early = block("early", 2, 7 * 60 + 30, 9 * 60)
+        val saturday = block("sat", 6, 600, 660)
+        assertEquals(CalendarLayout.HourRange(8, 21), CalendarLayout.hourRange(emptyList(), 8, 21))
+        assertEquals(CalendarLayout.HourRange(8, 22), CalendarLayout.hourRange(listOf(late), 8, 21))
+        assertEquals(CalendarLayout.HourRange(7, 21), CalendarLayout.hourRange(listOf(early), 8, 21))
+        assertEquals(CalendarLayout.HourRange(8, 21), CalendarLayout.hourRange(listOf(saturday), 8, 21))
+        assertEquals(listOf(1, 2, 3, 4, 5), CalendarLayout.visibleDays(listOf(late), false))
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), CalendarLayout.visibleDays(listOf(saturday), false))
+        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), CalendarLayout.visibleDays(listOf(saturday, block("sun", 0, 600, 660)), false))
+        assertEquals(listOf(0, 1, 2, 3, 4, 5, 6), CalendarLayout.visibleDays(emptyList(), true))
+    }
+
+    @Test fun blockAccessibilityLabelNamesCourseDayTimeRoomAndConflict() {
+        val event = block("a", 1, 600, 660)
+        assertEquals("CS 3000, Monday 10:00 \u2013 11:00 AM, Online", CalendarLayout.accessibilityLabel(event))
+        assertEquals(
+            "CS 3000, Monday 10:00 \u2013 11:00 AM, Online, conflicts with another class",
+            CalendarLayout.accessibilityLabel(event.copy(isConflict = true)),
+        )
     }
 
     @Test fun warningsListWhatNeedsAttention() {

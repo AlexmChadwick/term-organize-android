@@ -20,19 +20,34 @@ data class CalendarEvent(
     val startDate: String?,
     val endDate: String?,
     val isConflict: Boolean = false,
+    val laterWindows: List<DateWindow> = emptyList(),
 ) {
+    /** A start and end date, either of which may be open. */
+    data class DateWindow(val start: String?, val end: String?)
+
+    /** Every date window this block repeats on: the first, then each folded repeat with a different range. */
+    val dateWindows: List<DateWindow> get() = listOf(DateWindow(startDate, endDate)) + laterWindows
+
     companion object {
         private data class Block(val day: Int, val start: Int, val end: Int, val location: String)
 
-        fun forSection(section: CourseSection, color: Int): List<CalendarEvent> = buildList {
-            val seen = mutableSetOf<Block>()
+        fun forSection(section: CourseSection, color: Int): List<CalendarEvent> {
+            val folded = LinkedHashMap<Block, CalendarEvent>()
             section.weeklyMeetings.forEachIndexed { offset, meeting ->
                 val start = meeting.start ?: return@forEachIndexed
                 val end = meeting.end ?: return@forEachIndexed
                 val location = meeting.locationLabel
+                val window = DateWindow(meeting.startDate, meeting.endDate)
                 for (day in meeting.days.indices) {
-                    if (!seen.add(Block(day, start, end, location))) continue
-                    add(CalendarEvent(
+                    val key = Block(day, start, end, location)
+                    val existing = folded[key]
+                    if (existing != null) {
+                        if (window !in existing.dateWindows) {
+                            folded[key] = existing.copy(laterWindows = existing.laterWindows + window)
+                        }
+                        continue
+                    }
+                    folded[key] = CalendarEvent(
                         id = "${section.crn}-$offset-$day-$start",
                         title = section.courseKey.description,
                         subtitle = if (meeting.isOnline) "Online" else location,
@@ -44,16 +59,19 @@ data class CalendarEvent(
                         payload = section.crn,
                         startDate = meeting.startDate,
                         endDate = meeting.endDate,
-                    ))
+                    )
                 }
             }
+            return folded.values.toList()
         }
 
         fun markingConflicts(events: List<CalendarEvent>): List<CalendarEvent> = events.map { event ->
             val conflicts = events.any { other ->
                 event.payload != other.payload && event.day == other.day &&
                     event.start < other.end && other.start < event.end &&
-                    Meeting.dateWindowsOverlap(event.startDate, event.endDate, other.startDate, other.endDate)
+                    event.dateWindows.any { a ->
+                        other.dateWindows.any { b -> Meeting.dateWindowsOverlap(a.start, a.end, b.start, b.end) }
+                    }
             }
             if (conflicts) event.copy(isConflict = true) else event
         }
