@@ -213,7 +213,7 @@ class IcsRfcComplianceTests {
             term = Term("202710", "Fall 2026"),
             sections = listOf(sectionWithBadDates, sectionWithUntimedFinal),
         ))
-        val plan = SchedulePlan(name = "BadDates", termCode = "202710", selectedCRNs = listOf("66666", "77777"))
+        val plan = SchedulePlan(id = "baddates", name = "BadDates", termCode = "202710", selectedCRNs = listOf("66666", "77777"))
         val (events, summary) = ScheduleExporter.events(plan, cat)
         assertEquals(2, summary.weeklyMeetings)
         assertEquals(1, summary.finalExams)
