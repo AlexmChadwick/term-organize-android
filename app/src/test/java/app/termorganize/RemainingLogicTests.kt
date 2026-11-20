@@ -52,6 +52,7 @@ import app.termorganize.logic.offering.OfferingHistoryRepository
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.schedule.ScheduleExportEvent
 import app.termorganize.logic.schedule.ScheduleExporter
+import app.termorganize.logic.schedule.calendarName
 import app.termorganize.logic.schedule.calendarText
 import app.termorganize.logic.schedule.contentValues
 import app.termorganize.logic.schedule.events
@@ -1055,10 +1056,17 @@ class ScheduleCalendarTests {
         val exam = ScheduleExporter.contentValues(exported[2], 7)
         assertTrue(exam.containsKey(CalendarContract.Events.DTEND))
         assertFalse(exam.containsKey(CalendarContract.Events.RRULE))
-        val text = ScheduleExporter.calendarText(exported, "Primary – Fall 2026")
+        val text = ScheduleExporter.calendarText(exported, "Primary - Fall 2026")
         assertEquals(3, Regex("BEGIN:VEVENT").findAll(text).count())
         assertTrue(text.contains("CS 3000 Final Exam"))
         assertTrue(text.contains("RRULE:FREQ=WEEKLY;BYDAY=MO,WE"))
+    }
+
+    @Test fun calendarNameUsesPlainHyphenAndFallsBackToTermWhenPlanIsBlank() {
+        assertEquals("Primary - Fall 2026", ScheduleExporter.calendarName("Primary", "Fall 2026"))
+        assertEquals("Fall 2026", ScheduleExporter.calendarName("", "Fall 2026"))
+        assertEquals("Fall 2026", ScheduleExporter.calendarName("   ", "Fall 2026"))
+        assertFalse(ScheduleExporter.calendarName("Primary", "Fall 2026").contains('\u2013'))
     }
 
     @Test fun allDayEndIsNextCalendarMidnightAcrossDaylightSavingChange() {

@@ -89,6 +89,7 @@ import app.termorganize.logic.schedule.ScheduleGenerationResult
 import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.SchedulePreferences
 import app.termorganize.logic.schedule.SchedulePreset
+import app.termorganize.logic.schedule.calendarName
 import app.termorganize.logic.schedule.calendarText
 import app.termorganize.logic.schedule.events
 import app.termorganize.logic.schedule.insertAll
@@ -836,7 +837,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun exportIcs(plan: SchedulePlan): Uri {
         val index = _index.value
-        val name = if (index != null) "${plan.name} – ${index.term.name}" else plan.name
+        val name = if (index != null) ScheduleExporter.calendarName(plan.name, index.term.name) else plan.name
         val events = if (index != null) ScheduleExporter.events(plan, index).first else emptyList()
         val text = ScheduleExporter.calendarText(events, name)
         return writeShare("$name.ics", text.toByteArray(), "text/calendar")

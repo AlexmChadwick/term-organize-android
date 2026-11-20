@@ -171,6 +171,10 @@ fun ScheduleExporter.insertAll(context: Context, events: List<ScheduleExportEven
     return if (added == 0) ScheduleCalendarOutcome.NothingToAdd else ScheduleCalendarOutcome.Added(added)
 }
 
+/** `Plan - Term`, or the term alone when the plan name is blank. Used for both the calendar name and the file name. */
+fun ScheduleExporter.calendarName(planName: String, termName: String): String =
+    if (planName.isBlank()) termName else "$planName - $termName"
+
 fun ScheduleExporter.calendarText(events: List<ScheduleExportEvent>, calendarName: String, nowMillis: Long = System.currentTimeMillis()): String {
     val lines = mutableListOf(
         "BEGIN:VCALENDAR",
