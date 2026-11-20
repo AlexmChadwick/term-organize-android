@@ -836,13 +836,10 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun exportIcs(plan: SchedulePlan): Uri {
         val index = _index.value
-        val text = if (index == null) {
-            ScheduleExporter.ics(plan.termCode, plan.name, emptyList(), null, null)
-        } else {
-            val (events, _) = ScheduleExporter.events(plan, index)
-            ScheduleExporter.calendarText(events, "${plan.name} – ${index.term.name}")
-        }
-        return writeShare("${plan.name}.ics", text.toByteArray(), "text/calendar")
+        val name = if (index != null) "${plan.name} – ${index.term.name}" else plan.name
+        val events = if (index != null) ScheduleExporter.events(plan, index).first else emptyList()
+        val text = ScheduleExporter.calendarText(events, name)
+        return writeShare("$name.ics", text.toByteArray(), "text/calendar")
     }
 
     /** Writes every weekly meeting and every final into the device calendar. */
