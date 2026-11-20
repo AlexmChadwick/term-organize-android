@@ -297,12 +297,20 @@ data class Instructor(
     val displayName: String get() = displayName(name)
 
     companion object {
-        private val workEmail = Regex("""[^\s@]+@(?:northeastern\.edu|neu\.edu)""", RegexOption.IGNORE_CASE)
+        private val allowedEmailDomains = setOf("northeastern.edu", "neu.edu")
         private val emailSeparators = Regex("""[\s,;<>]+""")
+
+        private fun isInstitutionalAddress(candidate: String): Boolean {
+            val at = candidate.indexOf('@')
+            if (at < 1 || at != candidate.lastIndexOf('@')) return false
+            val domain = candidate.substring(at + 1)
+            if (domain.any { it.code > 0x7F }) return false
+            return domain.lowercase(Locale.ROOT) in allowedEmailDomains
+        }
 
         fun institutionalEmail(email: String?): String? = email
             ?.split(emailSeparators)
-            ?.filter(workEmail::matches)
+            ?.filter(::isInstitutionalAddress)
             ?.joinToString(" ")
             ?.takeIf { it.isNotEmpty() }
 
