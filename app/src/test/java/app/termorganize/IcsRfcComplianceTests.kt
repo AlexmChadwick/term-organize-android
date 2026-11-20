@@ -74,10 +74,10 @@ class IcsRfcComplianceTests {
         val textOne = ScheduleExporter.calendarText(firstEvents, "Fall", 0L)
         val textTwo = ScheduleExporter.calendarText(secondEvents, "Spring", 0L)
         val uidsFromBlocksOne = Regex("BEGIN:VEVENT\r\n[\\s\\S]*?END:VEVENT\r\n").findAll(textOne).map { block ->
-            Regex("\r\nUID:([^\r\n]+)\r\n").find(block)!!.groupValues[1]
+            Regex("\r\nUID:([^\r\n]+)\r\n").find(block.value)!!.groupValues[1]
         }.toList()
         val uidsFromBlocksTwo = Regex("BEGIN:VEVENT\r\n[\\s\\S]*?END:VEVENT\r\n").findAll(textTwo).map { block ->
-            Regex("\r\nUID:([^\r\n]+)\r\n").find(block)!!.groupValues[1]
+            Regex("\r\nUID:([^\r\n]+)\r\n").find(block.value)!!.groupValues[1]
         }.toList()
         assertTrue(uidsFromBlocksOne.isNotEmpty())
         assertTrue(uidsFromBlocksTwo.isNotEmpty())
