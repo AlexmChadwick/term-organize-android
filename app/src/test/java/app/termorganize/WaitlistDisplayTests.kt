@@ -16,6 +16,7 @@ import app.termorganize.logic.degree.WatchItem
 import app.termorganize.logic.schedule.ScheduleCourseInput
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerator
+import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.search.CatalogIndex
 import app.termorganize.logic.watchlist.WatchlistComparison
 import app.termorganize.ui.SectionSeatsText
