@@ -342,9 +342,19 @@ data class CourseSection(
     val isVariableCredit: Boolean get() = VariableCredits.isVariable(creditHourLow, creditHourHigh)
     val cpsOnly: Boolean? get() = CpsRestriction.isCpsOnly(restrictions)
     val courseKey: CourseKey get() = CourseKey(subject, number)
-    val isOpen: Boolean get() = seatsRemaining > 0
+    /** Freed seats go to the waitlist first, so a section with a waitlist queue is not open. */
+    val isOpen: Boolean get() = seatsRemaining > 0 && waitlistCount <= 0
+    val openSeats: Int get() = if (isOpen) seatsRemaining else 0
+    val isWaitlisted: Boolean get() = waitlistCount > 0
+    /** "Waitlist 7/10", "Waitlist 7" when the capacity is unknown, or null when there is no waitlist. */
+    val waitlistLabel: String? get() = when {
+        waitlistCapacity > 0 -> "Waitlist $waitlistCount/$waitlistCapacity"
+        waitlistCount > 0 -> "Waitlist $waitlistCount"
+        else -> null
+    }
+    val availabilityLabel: String get() = if (seatsRemaining <= 0) "Full" else if (isWaitlisted) "Waitlist" else "Open"
     val hasWaitlist: Boolean get() = waitlistCapacity > 0
-    val isFull: Boolean get() = seatsRemaining <= 0
+    val isFull: Boolean get() = !isOpen
     val fillFraction: Double
         get() = if (seatCapacity <= 0) 1.0 else (seatCapacity - seatsRemaining).toDouble().coerceIn(0.0, seatCapacity.toDouble()) / seatCapacity
     val isOnline: Boolean
@@ -365,7 +375,7 @@ data class CourseSection(
             if (weekly.isEmpty()) return if (isOnline) "Asynchronous / online" else "Times TBA"
             return weekly.joinToString(" · ") { "${it.days.compactLabel} ${it.timeLabel}" }
         }
-    val seatsLabel: String get() = "${seatsRemaining.coerceAtLeast(0)} of $seatCapacity seats"
+    val seatsLabel: String get() = "${openSeats.coerceAtLeast(0)} of $seatCapacity seats"
 
     fun conflicts(other: CourseSection): Boolean {
         val mine = weeklyMeetings

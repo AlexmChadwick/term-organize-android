@@ -362,7 +362,7 @@ object ScheduleNotices {
         }
         if (resolved.fullSections.isNotEmpty()) {
             val lines = resolved.fullSections.map { pair ->
-                val waitlist = if (pair.section.waitlistCapacity > 0) " · ${pair.section.waitlistRemaining} waitlist spots left" else ""
+                val waitlist = pair.section.waitlistLabel?.let { " · $it" } ?: ""
                 "${pair.section.courseKey.description} ${ScheduleFormat.sectionTitle(pair.section)} is full$waitlist"
             }
             items += ScheduleNotice(

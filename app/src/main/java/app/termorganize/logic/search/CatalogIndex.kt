@@ -286,7 +286,7 @@ class CatalogIndex(
             for (s in list) {
                 sectionCount++
                 if (s.isOpen) open++
-                seats += s.seatsRemaining.coerceAtLeast(0)
+                seats += s.openSeats.coerceAtLeast(0)
                 capacity += s.seatCapacity
                 if (s.waitlistRemaining > 0) wait++
                 if (s.campus.isNotEmpty()) campuses += s.campus
