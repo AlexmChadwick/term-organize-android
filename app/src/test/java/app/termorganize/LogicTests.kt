@@ -625,6 +625,21 @@ class LogicTests {
         assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test\\u0040example.com")).isNotEmpty())
     }
 
+    @Test fun proseSentencePeriodAfterAddressIsPunctuation() {
+        fun payload(description: String) =
+            """{"sections":[{"instructors":[{"name":"Doe, J","email":"j.doe@neu.edu"}]}],"courses":[{"description":"$description"}]}"""
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu.")).isEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu..")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu-")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@example.com.")).isNotEmpty())
+    }
+
+    @Test fun emailFieldTrailingDotIsRejected() {
+        assertNull(Instructor.institutionalEmail("office@northeastern.edu."))
+        assertNull(Instructor.institutionalEmail("office@neu.edu.."))
+        assertEquals("office@neu.edu", Instructor.institutionalEmail("office@neu.edu"))
+    }
+
     @Test fun instructorEmailRequiresAnExactInstitutionalDomain() {
         assertNull(Instructor.institutionalEmail("test@husky.neu.edu"))
         assertNull(Instructor.institutionalEmail("test@ece.northeastern.edu"))
@@ -686,7 +701,7 @@ class LogicTests {
                 }
                 val plain = value.replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
                 for (m in literalAddress.findAll(plain)) {
-                    val candidate = m.value.trimEnd('.', '-', '_')
+                    val candidate = m.value.removeSuffix(".")
                     if (!allowedCandidate(candidate)) bad += "text: ${m.value}"
                 }
             }
