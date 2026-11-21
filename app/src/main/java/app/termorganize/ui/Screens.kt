@@ -436,6 +436,17 @@ private fun Stat(value: String, label: String, modifier: Modifier = Modifier) {
     }
 }
 
+/** The status word is dropped for a queued section with seats: the "Waitlist n/cap" fact already says it. */
+@Composable
+internal fun SectionSeatsText(section: CourseSection) {
+    val status = if (section.isWaitlisted && section.seatsRemaining > 0) null else section.availabilityLabel
+    Text(
+        listOfNotNull(status, section.seatsLabel, section.waitlistLabel).joinToString(" · "),
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (section.isWaitlisted) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchScreen(model: AppModel, initial: String, open: (String) -> Unit, listDetail: Boolean = false) {
@@ -960,11 +971,7 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(section.scheduleSummary, style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        listOfNotNull(section.availabilityLabel, section.seatsLabel, section.waitlistLabel).joinToString(" · "),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (section.availabilityLabel == "Waitlist") MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    SectionSeatsText(section)
                     Text(section.instructorLabel, style = MaterialTheme.typography.bodyLarge)
                     if (section.cpsOnly == true) {
                         Text(CpsRestriction.SECTION_NOTE, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

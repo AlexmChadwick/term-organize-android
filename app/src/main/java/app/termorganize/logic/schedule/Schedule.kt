@@ -735,7 +735,7 @@ object ScheduleGenerator {
         if (!filters.includeHonors && section.honors) reasons += ScheduleFilterReason.HONORS
         if (!filters.includeOnline && section.isOnline) reasons += ScheduleFilterReason.ONLINE
         if (filters.hideFullSections && !section.isOpen) reasons += ScheduleFilterReason.SEATS
-        if (filters.minSeats > 0 && section.seatsRemaining < filters.minSeats) reasons += ScheduleFilterReason.SEATS
+        if (filters.minSeats > 0 && section.openSeats < filters.minSeats) reasons += ScheduleFilterReason.SEATS
         if (filters.campus != null && !section.isOnline && !hasNoCampus(section) && section.campus != filters.campus) reasons += ScheduleFilterReason.CAMPUS
         if (!preferences.isDefault) reasons += SchedulePreferenceRules.rejectionReasons(section, preferences)
         return reasons

@@ -75,7 +75,7 @@ object WatchlistComparison {
                 alerts += WatchlistAlert(
                     if (seatsOpened) WatchlistAlert.Kind.SEATS else WatchlistAlert.Kind.WAITLIST,
                     item.termCode, item.crn, item.courseKey, item.courseTitle, sectionName(section),
-                    section.seatsRemaining, section.seatCapacity, section.waitlistRemaining,
+                    section.openSeats, section.seatCapacity, section.waitlistRemaining,
                 )
             }
             updated[index] = next

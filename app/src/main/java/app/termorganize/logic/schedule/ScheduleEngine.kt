@@ -23,7 +23,7 @@ internal object ScheduleEngine {
             val own = ScheduleInterval.intervals(section, buildings)
             intervals += own
             if (!preferences.isDefault) points += SchedulePreferenceRules.sectionScore(section, own, preferences)
-            val seats = max(0, section.seatsRemaining)
+            val seats = max(0, section.openSeats)
             minSeats = min(minSeats, seats)
             totalSeats += seats
             if (seats == 0) full += 1
@@ -234,7 +234,7 @@ internal object ScheduleEngine {
             slotMin = slotMin,
             slotMax = slotMax,
         )
-        val seats = IntArray(sections.size) { max(0, sections[it].seatsRemaining) }
+        val seats = IntArray(sections.size) { max(0, sections[it].openSeats) }
         val collector = ScheduleCollector(
             sort, max(1, limits.maxResults), slots.map { it.start }, intervalStart, intervals, seats, sectionPoints,
             ScheduleScoring.Weights(preferences), ScheduleScoring.measureOptions(preferences),
