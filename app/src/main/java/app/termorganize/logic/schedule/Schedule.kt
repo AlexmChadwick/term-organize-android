@@ -734,7 +734,7 @@ object ScheduleGenerator {
         if (!filters.freeDays.isEmpty && weekly.any { !it.days.isDisjoint(filters.freeDays) }) reasons += ScheduleFilterReason.FREE_DAY
         if (!filters.includeHonors && section.honors) reasons += ScheduleFilterReason.HONORS
         if (!filters.includeOnline && section.isOnline) reasons += ScheduleFilterReason.ONLINE
-        if (filters.hideFullSections && section.seatsRemaining <= 0) reasons += ScheduleFilterReason.SEATS
+        if (filters.hideFullSections && !section.isOpen) reasons += ScheduleFilterReason.SEATS
         if (filters.minSeats > 0 && section.seatsRemaining < filters.minSeats) reasons += ScheduleFilterReason.SEATS
         if (filters.campus != null && !section.isOnline && !hasNoCampus(section) && section.campus != filters.campus) reasons += ScheduleFilterReason.CAMPUS
         if (!preferences.isDefault) reasons += SchedulePreferenceRules.rejectionReasons(section, preferences)
@@ -818,7 +818,7 @@ object SchedulePreferenceRules {
         return reasons
     }
 
-    fun isFull(section: CourseSection) = section.seatCapacity > 0 && section.seatsRemaining <= 0
+    fun isFull(section: CourseSection) = section.seatCapacity > 0 && !section.isOpen
 
     fun tooClose(a: CourseSection, aMeetings: List<Meeting>, b: CourseSection, bMeetings: List<Meeting>, minutes: Int): Boolean {
         if (minutes <= 0 || a.isOnline || b.isOnline) return false

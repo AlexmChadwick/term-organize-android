@@ -61,11 +61,11 @@ object WatchlistComparison {
                 updated[index] = item.copy(lastCheckedAt = now)
                 continue
             }
-            val seatsOpened = item.lastSeatsRemaining <= 0 && section.seatsRemaining > 0
-            val waitlistOpened = item.notifyOnWaitlist && !seatsOpened && section.seatsRemaining <= 0 &&
+            val seatsOpened = item.lastSeatsRemaining <= 0 && section.isOpen
+            val waitlistOpened = item.notifyOnWaitlist && !seatsOpened && !section.isOpen &&
                 item.lastWaitlistRemaining <= 0 && section.waitlistRemaining > 0
             var next = item.copy(
-                lastSeatsRemaining = section.seatsRemaining,
+                lastSeatsRemaining = section.openSeats,
                 lastWaitlistRemaining = section.waitlistRemaining,
                 seatCapacity = section.seatCapacity,
                 lastCheckedAt = now,

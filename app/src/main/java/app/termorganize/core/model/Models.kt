@@ -342,7 +342,13 @@ data class CourseSection(
     val isVariableCredit: Boolean get() = VariableCredits.isVariable(creditHourLow, creditHourHigh)
     val cpsOnly: Boolean? get() = CpsRestriction.isCpsOnly(restrictions)
     val courseKey: CourseKey get() = CourseKey(subject, number)
-    val isOpen: Boolean get() = seatsRemaining > 0
+    /** Freed seats go to the waitlist first, so a section with a waitlist queue is not open. */
+    val isOpen: Boolean get() = seatsRemaining > 0 && waitlistCount <= 0
+    val openSeats: Int get() = if (isOpen) seatsRemaining else 0
+    val isWaitlisted: Boolean get() = waitlistCount > 0
+    /** "Waitlist 7/10", or null when the section has no waitlist. */
+    val waitlistLabel: String? get() = if (waitlistCapacity > 0) "Waitlist $waitlistCount/$waitlistCapacity" else null
+    val availabilityLabel: String get() = if (isOpen) "Open" else if (seatsRemaining > 0) "Waitlist" else "Full"
     val hasWaitlist: Boolean get() = waitlistCapacity > 0
     val isFull: Boolean get() = seatsRemaining <= 0
     val fillFraction: Double

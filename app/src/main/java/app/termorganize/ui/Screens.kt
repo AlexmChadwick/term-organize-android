@@ -961,9 +961,9 @@ private fun CourseScreen(course: Course, model: AppModel, back: () -> Unit, high
                     )
                     Text(section.scheduleSummary, style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        "${section.seatsLabel} · waitlist ${section.waitlistRemaining} of ${section.waitlistCapacity}",
+                        listOfNotNull(section.availabilityLabel, section.seatsLabel, section.waitlistLabel).joinToString(" · "),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (section.availabilityLabel == "Waitlist") MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(section.instructorLabel, style = MaterialTheme.typography.bodyLarge)
                     if (section.cpsOnly == true) {
