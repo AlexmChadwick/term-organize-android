@@ -794,7 +794,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val term = _index.value?.term?.code ?: return
         val item = WatchItem(
             term, section.crn, section.courseKey, title, section.scheduleSummary,
-            lastSeatsRemaining = section.seatsRemaining,
+            lastSeatsRemaining = section.openSeats,
             lastWaitlistRemaining = section.waitlistRemaining,
             seatCapacity = section.seatCapacity,
             notifyOnWaitlist = true,

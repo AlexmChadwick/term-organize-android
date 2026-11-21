@@ -65,7 +65,7 @@ class ScheduleSupportTests {
         assertEquals(app.termorganize.logic.schedule.ScheduleNotice.Severity.ERROR, notices[0].severity)
         assertEquals("1 time conflict", notices[0].title)
         assertTrue(notices[0].lines.first().contains("CS 3000 overlaps MATH 2331"))
-        assertEquals(listOf("MATH 2331 Lecture 01 is full · 5 waitlist spots left"), notices[1].lines)
+        assertEquals(listOf("MATH 2331 Lecture 01 is full · Waitlist 0/5"), notices[1].lines)
         assertTrue(notices.all { it.fix == null })
     }
 
