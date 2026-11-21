@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -35,7 +36,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.layout.layout
@@ -104,6 +107,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
@@ -141,6 +146,8 @@ import app.termorganize.logic.professors.CourseColors
 import app.termorganize.logic.professors.ProfessorPage
 import app.termorganize.logic.rooms.LegalText
 import app.termorganize.logic.rooms.RoomAvailability
+import app.termorganize.logic.schedule.CalendarEvent
+import app.termorganize.logic.schedule.CalendarLayout
 import app.termorganize.logic.schedule.ResolvedPlan
 import app.termorganize.logic.schedule.ScheduleFilters
 import app.termorganize.logic.schedule.ScheduleGenerationResult
@@ -243,8 +250,14 @@ fun TermOrganizeRoot(
     val index by model.index.collectAsState()
     val status by model.status.collectAsState()
     val error by model.error.collectAsState()
-    var route by remember { mutableStateOf(startRoute ?: "home") }
-    LaunchedEffect(startRoute) { if (!startRoute.isNullOrBlank()) route = startRoute }
+    val nav = remember { RouteState(startRoute ?: "home") }
+    val route = nav.route
+    val backRoute = nav.backRoute
+    val scheduleUi = remember { ScheduleUiState() }
+    val isDetail = { r: String -> RouteState.isDetail(r) }
+    val navigate: (String) -> Unit = nav::navigate
+    val closeDetail = nav::closeDetail
+    LaunchedEffect(startRoute) { if (!startRoute.isNullOrBlank()) navigate(startRoute) }
     val dark = when (user.preferences.darkTheme) {
         "dark" -> true
         "light" -> false
@@ -258,7 +271,8 @@ fun TermOrganizeRoot(
     }
     TermOrganizeTheme(dynamic = user.preferences.dynamicColor, dark = dark) {
         val tab = when {
-            route.startsWith("search") || route.startsWith("course/") || route.startsWith("section/") -> Tab.Search
+            isDetail(route) && backRoute != null -> Tab.Schedule
+            route.startsWith("search") || isDetail(route) -> Tab.Search
             route.startsWith("schedule") -> Tab.Schedule
             route.startsWith("degree") -> Tab.Degree
             route.startsWith("more") || route.startsWith("room") || route.startsWith("professor") || route.startsWith("watch") || route.startsWith("settings") -> Tab.More
@@ -287,7 +301,7 @@ fun TermOrganizeRoot(
                 Tab.entries.forEach { item ->
                     item(
                         selected = tab == item,
-                        onClick = { route = item.name.lowercase() },
+                        onClick = { navigate(item.name.lowercase()) },
                         icon = {
                             Icon(
                                 when (item) {
@@ -317,15 +331,15 @@ fun TermOrganizeRoot(
                         ),
                     ) {
                     when {
-                        route.startsWith("course/") -> CourseRoute(route, model) { route = "search" }
-                        route.startsWith("section/") -> SectionRoute(route, model) { route = "search" }
-                        route.startsWith("professor/") -> ProfessorRoute(route.removePrefix("professor/"), model) { route = "more/professors" }
-                        route.startsWith("room/") -> RoomRoute(route.removePrefix("room/"), model) { route = "more/rooms" }
-                        tab == Tab.Home -> HomeScreen(model, status, index == null) { route = it }
-                        tab == Tab.Search -> SearchScreen(model, queryOf(route), { route = it }, listDetail = wideSearch)
-                        tab == Tab.Schedule -> ScheduleScreen(model)
+                        route.startsWith("course/") -> CourseRoute(route, model, closeDetail)
+                        route.startsWith("section/") -> SectionRoute(route, model, closeDetail)
+                        route.startsWith("professor/") -> ProfessorRoute(route.removePrefix("professor/"), model) { nav.route = "more/professors" }
+                        route.startsWith("room/") -> RoomRoute(route.removePrefix("room/"), model) { nav.route = "more/rooms" }
+                        tab == Tab.Home -> HomeScreen(model, status, index == null, navigate)
+                        tab == Tab.Search -> SearchScreen(model, queryOf(route), navigate, listDetail = wideSearch)
+                        tab == Tab.Schedule -> ScheduleScreen(model, scheduleUi, navigate)
                         tab == Tab.Degree -> DegreeScreen(model, onImportPdf)
-                        else -> MoreScreen(route, model, onImportJson) { route = it }
+                        else -> MoreScreen(route, model, onImportJson, navigate)
                     }
                     }
                 }
@@ -1020,21 +1034,51 @@ private fun RequisiteNode(node: Requisite, depth: Int, index: CatalogIndex?) {
     }
 }
 
+/** Route plus where a course or section opened from the schedule returns to; anything else returns to Search. */
+internal class RouteState(start: String) {
+    var route by mutableStateOf(start)
+    var backRoute by mutableStateOf<String?>(null)
+
+    fun navigate(next: String) {
+        if (isDetail(next)) {
+            if (!isDetail(route)) backRoute = if (route.startsWith("schedule")) route else null
+        } else {
+            backRoute = null
+        }
+        route = next
+    }
+
+    fun closeDetail() { route = backRoute ?: "search"; backRoute = null }
+
+    companion object {
+        fun isDetail(r: String) = r.startsWith("course/") || r.startsWith("section/")
+    }
+}
+
+/** Schedule tab state held above the route switch, so opening a course and coming back keeps the user's place. */
+internal class ScheduleUiState {
+    var selectedId by mutableStateOf<String?>(null)
+    var generated by mutableStateOf<ScheduleGenerationResult?>(null)
+    var sentence by mutableStateOf("")
+    var name by mutableStateOf("")
+    val scroll = ScrollState(0)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ScheduleScreen(model: AppModel) {
+private fun ScheduleScreen(model: AppModel, ui: ScheduleUiState, open: (String) -> Unit) {
     val user by model.user.collectAsState()
     val index by model.index.collectAsState()
     val term = index?.term?.code
     val plans = user.plans.filter { term == null || it.termCode == term }
-    var selectedId by remember(plans) { mutableStateOf(plans.firstOrNull { it.isPrimary }?.id ?: plans.firstOrNull()?.id) }
+    val selectedId = plans.firstOrNull { it.id == ui.selectedId }?.id ?: (plans.firstOrNull { it.isPrimary } ?: plans.firstOrNull())?.id
     val plan = plans.firstOrNull { it.id == selectedId }
-    var generated by remember(selectedId) { mutableStateOf<ScheduleGenerationResult?>(null) }
-    var sentence by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
+    var generated by ui::generated
+    var sentence by ui::sentence
+    var name by ui::name
     val context = LocalContext.current
     Column(
-        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 16.dp).padding(bottom = 8.dp),
+        Modifier.fillMaxSize().verticalScroll(ui.scroll).padding(horizontal = 16.dp, vertical = 16.dp).padding(bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Schedule", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
@@ -1045,7 +1089,7 @@ private fun ScheduleScreen(model: AppModel) {
         }
         ChipFlow {
             plans.forEach { item ->
-                FilterChip(selected = item.id == selectedId, onClick = { selectedId = item.id; generated = null }, label = { Text(item.name + if (item.isPrimary) " · primary" else "") })
+                FilterChip(selected = item.id == selectedId, onClick = { ui.selectedId = item.id; generated = null }, label = { Text(item.name + if (item.isPrimary) " · primary" else "") })
             }
         }
         val others = user.plans.filter { term != null && it.termCode != term }.groupBy { it.termCode }
@@ -1064,7 +1108,7 @@ private fun ScheduleScreen(model: AppModel) {
         ChipFlow {
             if (!plan.isPrimary) TextButton(onClick = { model.setPrimarySchedule(plan.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Make primary") }
             TextButton(onClick = { model.duplicateSchedule(plan.id) }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Duplicate") }
-            TextButton(onClick = { model.deleteSchedule(plan.id); selectedId = null }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Delete plan", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = { model.deleteSchedule(plan.id); ui.selectedId = null; generated = null }, modifier = Modifier.heightIn(min = 48.dp)) { Text("Delete plan", color = MaterialTheme.colorScheme.error) }
         }
         val resolved = ResolvedPlan(plan, index)
         ScheduleNotices.make(resolved, index?.term?.name ?: "this term", catalogUnavailable = index == null).forEach { notice ->
@@ -1079,8 +1123,8 @@ private fun ScheduleScreen(model: AppModel) {
                 TextButton(onClick = { model.forgetSections(plan.id, fix.removeSections) }) { Text(notice.fixTitle ?: "Remove") }
             }
         }
-        val selected = plan.selectedCRNs.mapNotNull { index?.section(it) }
-        WeekCalendar(selected, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
+        WeekCalendar(resolved.events, user.preferences.showWeekends, user.preferences.calendarStartHour, user.preferences.calendarEndHour)
+        UntimedSections(resolved.untimed, open)
         Text("Courses", style = MaterialTheme.typography.titleMedium)
         if (plan.courses.isEmpty()) EmptyText("Search for a course and tap Add to schedule.")
         plan.courses.forEachIndexed { rowIndex, course ->
@@ -1205,33 +1249,11 @@ private fun share(context: android.content.Context, uri: android.net.Uri, type: 
     context.startActivity(Intent.createChooser(intent, "Share"))
 }
 
-private data class PlacedMeeting(val section: CourseSection, val start: Int, val end: Int, val lane: Int, val lanes: Int)
+/** Conflict marker diameter, and the lane width under which the marker moves to its own row. */
+private val ConflictDot = 8.dp
+private val ConflictNarrowLane = 40.dp
 
-private fun placeMeetings(sections: List<CourseSection>, day: Int, windowStart: Int, windowEnd: Int): List<PlacedMeeting> {
-    val items = sections.flatMap { section ->
-        section.weeklyMeetings.filter { it.days.contains(day) }.mapNotNull { meeting ->
-            val start = meeting.start ?: return@mapNotNull null
-            val end = meeting.end ?: return@mapNotNull null
-            if (end <= windowStart || start >= windowEnd) null
-            else Triple(section, start.coerceAtLeast(windowStart), end.coerceAtMost(windowEnd))
-        }
-    }.sortedBy { it.second }
-    val laneEnds = mutableListOf<Int>()
-    val placed = items.map { (section, start, end) ->
-        var lane = laneEnds.indexOfFirst { it <= start }
-        if (lane < 0) {
-            lane = laneEnds.size
-            laneEnds += end
-        } else {
-            laneEnds[lane] = end
-        }
-        Triple(section, start to end, lane)
-    }
-    val count = laneEnds.size.coerceAtLeast(1)
-    return placed.map { (section, range, lane) -> PlacedMeeting(section, range.first, range.second, lane, count) }
-}
-
-private fun blockColors(argb: Int): Pair<Color, Color> {
+internal fun blockColors(argb: Int): Pair<Color, Color> {
     var color = Color(argb)
     val ink = Color(0xFF142226)
     repeat(5) {
@@ -1243,15 +1265,53 @@ private fun blockColors(argb: Int): Pair<Color, Color> {
     return color to if (contrastRatio(color, Color.White) >= contrastRatio(color, ink)) Color.White else ink
 }
 
-private fun contrastRatio(background: Color, foreground: Color): Float {
+internal fun contrastRatio(background: Color, foreground: Color): Float {
     val hi = maxOf(background.luminance(), foreground.luminance())
     val lo = minOf(background.luminance(), foreground.luminance())
     return (hi + 0.05f) / (lo + 0.05f)
 }
 
 @Composable
-private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, startHour: Int, endHour: Int) {
-    val days = if (weekends) (0..6).toList() else (1..5).toList()
+internal fun UntimedSections(untimed: List<ResolvedPlan.SectionPair>, open: (String) -> Unit) {
+    if (untimed.isNotEmpty()) {
+        Text("Online / TBA", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
+        untimed.forEach { pair ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .testTag("untimed-row")
+                    .clickable(onClickLabel = "Open course") { open("course/${pair.section.courseKey.subject}/${pair.section.courseKey.number}") },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(12.dp).background(Color(CourseColors.at(pair.entry.planCourse.colorIndex)), CircleShape))
+                Column(Modifier.weight(1f)) {
+                    val sectionTitle = pair.section.title.takeIf { it.isNotBlank() }
+                    Text(
+                        listOfNotNull(pair.section.courseKey.description, sectionTitle).joinToString(" · "),
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        pair.section.scheduleSummary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "These sections don\u2019t meet at a set time, so they don\u2019t appear on the calendar.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+internal fun WeekCalendar(events: List<CalendarEvent>, weekends: Boolean, configuredStartHour: Int, configuredEndHour: Int) {
+    val days = CalendarLayout.visibleDays(events, weekends)
+    val hours = CalendarLayout.hourRange(events, configuredStartHour, configuredEndHour)
+    val startHour = hours.start
+    val endHour = hours.end
     val windowStart = startHour * 60
     val windowEnd = endHour * 60
     val span = (windowEnd - windowStart).coerceAtLeast(60).toFloat()
@@ -1278,7 +1338,7 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
                 }
             }
             days.forEach { day ->
-                val placed = placeMeetings(sections, day, windowStart, windowEnd)
+                val placed = CalendarLayout.lanes(events.filter { it.day == day })
                 Column(Modifier.width(dayWidth).padding(end = 4.dp)) {
                     Text(
                         DaySet.SHORT[day],
@@ -1301,30 +1361,63 @@ private fun WeekCalendar(sections: List<CourseSection>, weekends: Boolean, start
                             }
                         }
                         placed.forEach { meeting ->
-                            val top = ((meeting.start - windowStart) / span).coerceIn(0f, 1f)
-                            val bottom = ((meeting.end - windowStart) / span).coerceIn(top, 1f)
-                            val (fill, label) = blockColors(CourseColors.forCode(meeting.section.courseKey.description))
-                            val fraction = (bottom - top).coerceAtLeast(0f)
+                            val top = ((meeting.event.start - windowStart) / span).coerceIn(0f, 1f)
+                            val bottom = ((meeting.event.end - windowStart) / span).coerceIn(top, 1f)
+                            val (fill, label) = blockColors(meeting.event.color)
+                            val shape = RoundedCornerShape(6.dp)
+                                            val fraction = (bottom - top).coerceAtLeast(0f)
                             BoxWithConstraints(Modifier.fillMaxSize()) {
-                                val laneWidth = maxWidth / meeting.lanes
+                                val laneWidth = maxWidth / meeting.count
+                                val blockHeight = (maxHeight * fraction).coerceAtLeast(22.dp)
+                                val description = CalendarLayout.accessibilityLabel(meeting.event)
+                                val narrow = laneWidth < ConflictNarrowLane
+                                val conflictBorder = if (meeting.event.isConflict) Modifier.border(if (narrow) 1.dp else 2.dp, scheme.error, shape) else Modifier
                                 Box(
                                     Modifier
                                         .align(Alignment.TopStart)
-                                        .offset(x = laneWidth * meeting.lane, y = maxHeight * top)
+                                        .offset(x = laneWidth * meeting.index, y = maxHeight * top)
                                         .width(laneWidth)
-                                        .height((maxHeight * fraction).coerceAtLeast(22.dp))
-                                        .padding(2.dp)
-                                        .background(fill, RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        .height(blockHeight)
+                                        .testTag("block-${meeting.event.id}")
+                                        .clearAndSetSemantics { contentDescription = description }
+                                        .padding(if (narrow) 1.dp else 2.dp)
+                                        .background(fill, shape)
+                                        .then(conflictBorder)
+                                        .padding(horizontal = if (narrow) 1.dp else 4.dp, vertical = 2.dp),
                                 ) {
-                                    Text(
-                                        "${meeting.section.courseKey.subject}\n${meeting.section.courseKey.number}",
-                                        color = label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = if (fraction >= 0.08f) 2 else 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
+                                    // The marker takes the block's label color, which already clears 4.5:1 on its fill.
+                                    // In narrow lanes it gets its own row above the title instead of competing for width.
+                                    if (meeting.event.isConflict && !narrow) {
+                                        Box(
+                                            Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(ConflictDot)
+                                                .testTag("conflict-marker")
+                                                .background(label, CircleShape),
+                                        )
+                                    }
+                                    Column(Modifier.padding(end = if (meeting.event.isConflict && !narrow) ConflictDot else 0.dp)) {
+                                        if (meeting.event.isConflict && narrow) {
+                                            Box(Modifier.size(ConflictDot).testTag("conflict-marker").background(label, CircleShape))
+                                        }
+                                        Text(
+                                            meeting.event.title.replaceFirst(' ', '\n'),
+                                            color = label,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            maxLines = if (blockHeight >= 40.dp) 2 else 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (blockHeight >= 64.dp && meeting.event.subtitle.isNotBlank()) {
+                                            Text(
+                                                meeting.event.subtitle,
+                                                color = label,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1867,7 +1960,10 @@ private fun ProfessorRoute(encoded: String, model: AppModel, back: () -> Unit) {
         ) { Text("Rate My Professors") }
         val colors = ProfessorPage.courseColors(person.courseKeys)
         Text("Teaching calendar", style = MaterialTheme.typography.titleMedium)
-        WeekCalendar(sections, false, 8, 21)
+        val events = sections.flatMap { section ->
+            CalendarEvent.forSection(section, CourseColors.forCode(section.courseKey.description))
+        }
+        WeekCalendar(events, false, 8, 21)
         sections.forEach { section ->
             val swatch = colors[section.courseKey] ?: CourseColors.at(0)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
