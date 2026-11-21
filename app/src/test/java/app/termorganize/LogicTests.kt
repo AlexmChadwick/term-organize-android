@@ -66,10 +66,10 @@ import app.termorganize.logic.watchlist.WatchlistStatus
 import app.termorganize.logic.widget.WidgetMeeting
 import app.termorganize.logic.widget.WidgetScheduleData
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -81,6 +81,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.util.Locale
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
 
@@ -588,31 +589,128 @@ class LogicTests {
         assertEquals("Algorithms and Data", catalog.courses.first { it.subject == "CS" && it.number == "3000" }.title)
     }
 
-    @Test fun spring2027FileContainsOnlyWorkEmailDomains() {
-        val text = GZIPInputStream(bundledCatalogFile("202730").inputStream()).use { it.readBytes() }.decodeToString()
-        val sections = Json.parseToJsonElement(text).jsonObject.getValue("sections").jsonArray
-        val allowed = setOf("northeastern.edu", "neu.edu")
-        var addresses = 0
-        for (section in sections) {
-            val instructors = section.jsonObject["instructors"]?.jsonArray ?: continue
-            for (person in instructors) {
-                val email = person.jsonObject["email"] ?: continue
-                assertTrue(email is JsonPrimitive && email.isString)
-                val raw = email.jsonPrimitive.content
-                assertTrue(raw.isNotBlank())
-                val tokens = raw.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                assertTrue(tokens.isNotEmpty())
-                for (token in tokens) {
-                    val domain = token.substringAfter('@', missingDelimiterValue = "").lowercase()
-                    assertTrue("bundled 202730 email domain: $domain", domain in allowed)
-                    addresses++
-                }
+    @Test fun bundledFilesContainOnlyInstitutionalEmailDomains() {
+        val directory = requireNotNull(bundledCatalogFile("202730").parentFile)
+        val files = directory.listFiles().orEmpty().filter { Regex("""term-\d{6}\.json(?:\.gz)?""").matches(it.name) }
+        assertTrue(files.map { it.name }.containsAll(listOf("term-202710.json.gz", "term-202730.json.gz")))
+        for (file in files) {
+            val text = if (file.name.endsWith(".gz")) {
+                GZIPInputStream(file.inputStream()).bufferedReader().use { it.readText() }
+            } else {
+                file.readText()
             }
+            val found = rawEmailViolations(text)
+            assertTrue("${file.name}: ${found.take(5)}", found.isEmpty())
+            assertTrue(file.name, rawAllowedEmailCount(text) > 0)
         }
-        assertTrue(addresses > 0)
+    }
+
+    @Test fun rawEmailCheckRejectsMutatedPayloads() {
+        fun payload(email: String, description: String = "Intro") =
+            """{"sections":[{"instructors":[{"name":"Doe, J","email":"$email"}]}],"courses":[{"description":"$description"}]}"""
+        assertEquals(emptyList<String>(), rawEmailViolations(payload("j.doe@northeastern.edu")))
+        assertEquals(emptyList<String>(), rawEmailViolations(payload("a@NEU.edu, b@northeastern.edu")))
+        assertEquals(emptyList<String>(), rawEmailViolations(payload("j.doe@neu.edu", "Write to office@northeastern.edu.")))
+        assertTrue(rawEmailViolations(payload("test@husky.neu.edu")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("test@neu.edu.")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("test@northeastern.edu.")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("test@northea\\u017Ftern.edu")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("test@northeastern.edu\\u00e9")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("test@example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test[at]example[dot]com")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test (at) example (dot) com")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test@example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test@neu.edu.")).isEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test@husky[dot]neu[dot]edu")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("j.doe@neu.edu", "Ask test\\u0040example.com")).isNotEmpty())
+    }
+
+    @Test fun proseSentencePeriodAfterAddressIsPunctuation() {
+        fun payload(description: String) =
+            """{"sections":[{"instructors":[{"name":"Doe, J","email":"j.doe@neu.edu"}]}],"courses":[{"description":"$description"}]}"""
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu.")).isEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu..")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@northeastern.edu-")).isNotEmpty())
+        assertTrue(rawEmailViolations(payload("Write to office@example.com.")).isNotEmpty())
+    }
+
+    @Test fun emailFieldTrailingDotIsRejected() {
+        assertNull(Instructor.institutionalEmail("office@northeastern.edu."))
+        assertNull(Instructor.institutionalEmail("office@neu.edu.."))
+        assertEquals("office@neu.edu", Instructor.institutionalEmail("office@neu.edu"))
+    }
+
+    @Test fun instructorEmailRequiresAnExactInstitutionalDomain() {
+        assertNull(Instructor.institutionalEmail("test@husky.neu.edu"))
+        assertNull(Instructor.institutionalEmail("test@ece.northeastern.edu"))
+        assertNull(Instructor.institutionalEmail("test@example.com"))
+        assertEquals("test@NEU.edu", Instructor.institutionalEmail("test@example.com, test@NEU.edu"))
+        // Unicode long s (U+017F) must not fold to ASCII s under case-insensitive matching.
+        assertNull(Instructor.institutionalEmail("test@northea\u017Ftern.edu"))
+        assertNull(Instructor.institutionalEmail("test@NORTHEA\u017FTERN.EDU"))
+        // Trailing dot and non-ASCII suffixes are different domains.
+        assertNull(Instructor.institutionalEmail("test@neu.edu."))
+        assertNull(Instructor.institutionalEmail("test@northeastern.edu."))
+        assertNull(Instructor.institutionalEmail("test@neu.edu\u00e9"))
+        assertNull(Instructor.institutionalEmail("test@neu.edu.evil.com"))
+        assertNull(Instructor.institutionalEmail("test@@neu.edu"))
+        // ASCII case folding and the full local part are preserved.
+        assertEquals("Jo!n+x'y@Northeastern.EDU", Instructor.institutionalEmail("Jo!n+x'y@Northeastern.EDU"))
+        assertEquals("a.b@neu.edu c@neu.edu", Instructor.institutionalEmail("a.b@neu.edu; c@neu.edu, d@neu.edu."))
     }
 
     companion object {
+        private val allowedEmailDomains = setOf("northeastern.edu", "neu.edu")
+        private val emailKey = Regex("""email""")
+        private val fieldSeparators = Regex("""[\s,;<>]+""")
+        private val literalAddress = Regex("""[^\s@<>,;()\[\]"']+@[\p{L}\p{N}._-]+""")
+        private val obfuscatedAt = Regex("""\s*[\[({]\s*at\s*[\])}]\s*""", RegexOption.IGNORE_CASE)
+        private val obfuscatedDot = Regex("""\s*[\[({]\s*dot\s*[\])}]\s*""", RegexOption.IGNORE_CASE)
+
+        private fun allowedDomain(domain: String): Boolean =
+            domain.all { it.code <= 0x7F } && domain.lowercase(Locale.ROOT) in allowedEmailDomains
+
+        private fun allowedCandidate(candidate: String): Boolean {
+            val at = candidate.indexOf('@')
+            return at >= 1 && at == candidate.lastIndexOf('@') && allowedDomain(candidate.substring(at + 1))
+        }
+
+        /** Parses raw JSON with no catalog sanitizer so escaped values are decoded and visible. */
+        private fun rawStrings(text: String): List<Pair<Boolean, String>> {
+            val out = mutableListOf<Pair<Boolean, String>>()
+            fun walk(node: JsonElement, isEmailField: Boolean) {
+                when (node) {
+                    is JsonObject -> node.forEach { (k, v) -> walk(v, emailKey.matches(k)) }
+                    is JsonArray -> node.forEach { walk(it, isEmailField) }
+                    is JsonPrimitive -> if (node.isString) out += isEmailField to node.content
+                    else -> Unit
+                }
+            }
+            walk(Json.parseToJsonElement(text), false)
+            return out
+        }
+
+        /** Email fields must be complete allowed candidates; every other string is scanned for literal and obfuscated addresses. */
+        fun rawEmailViolations(text: String): List<String> {
+            val bad = mutableListOf<String>()
+            for ((isEmailField, value) in rawStrings(text)) {
+                if (isEmailField) {
+                    value.split(fieldSeparators).filter { it.isNotEmpty() }
+                        .filterNot(::allowedCandidate).forEach { bad += "email field: $it" }
+                    continue
+                }
+                val plain = value.replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
+                for (m in literalAddress.findAll(plain)) {
+                    val candidate = m.value.removeSuffix(".")
+                    if (!allowedCandidate(candidate)) bad += "text: ${m.value}"
+                }
+            }
+            return bad
+        }
+
+        fun rawAllowedEmailCount(text: String): Int =
+            rawStrings(text).filter { it.first }.sumOf { (_, v) -> v.split(fieldSeparators).count(::allowedCandidate) }
+
         private var index: CatalogIndex? = null
 
         fun bundledCatalogFile(code: String): File = listOf(
