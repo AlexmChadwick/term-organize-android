@@ -382,7 +382,7 @@ data class BannerFaculty(
 ) {
     fun toInstructor(): Instructor? {
         val name = displayName?.let { HTMLText.decodeEntities(HTMLText.decodeEntities(it)) }.nilIfBlank() ?: return null
-        return Instructor(name, primaryIndicator ?: false, emailAddress.nilIfBlank())
+        return Instructor(name, primaryIndicator ?: false, Instructor.institutionalEmail(emailAddress))
     }
 }
 
@@ -537,7 +537,7 @@ object CatalogBuilder {
                 campus = HTMLText.decodeEntities(s.campusDescription ?: ""),
                 instructionMethod = s.instructionalMethodDescription?.let { HTMLText.decodeEntities(it) },
                 meetings = meetings,
-                instructors = if (bannerInstructors.isEmpty()) prior?.instructors else bannerInstructors,
+                instructors = if (bannerInstructors.isEmpty()) prior?.instructors?.map { it.copy(email = Instructor.institutionalEmail(it.email)) } else bannerInstructors,
                 crossListCRNs = cross,
                 attributes = attributes,
                 description = prior?.description,

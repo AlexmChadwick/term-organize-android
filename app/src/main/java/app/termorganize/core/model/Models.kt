@@ -297,6 +297,23 @@ data class Instructor(
     val displayName: String get() = displayName(name)
 
     companion object {
+        private val allowedEmailDomains = setOf("northeastern.edu", "neu.edu")
+        private val emailSeparators = Regex("""[\s,;<>]+""")
+
+        private fun isInstitutionalAddress(candidate: String): Boolean {
+            val at = candidate.indexOf('@')
+            if (at < 1 || at != candidate.lastIndexOf('@')) return false
+            val domain = candidate.substring(at + 1)
+            if (domain.any { it.code > 0x7F }) return false
+            return domain.lowercase(Locale.ROOT) in allowedEmailDomains
+        }
+
+        fun institutionalEmail(email: String?): String? = email
+            ?.split(emailSeparators)
+            ?.filter(::isInstitutionalAddress)
+            ?.joinToString(" ")
+            ?.takeIf { it.isNotEmpty() }
+
         fun displayName(raw: String): String {
             val parts = raw.split(",", limit = 2).map { it.trim() }
             if (parts.size != 2 || parts[1].isEmpty()) return raw.trim()
@@ -420,6 +437,13 @@ data class TermCatalog(
     val attributes: List<AttributeInfo> = emptyList(),
     val campuses: List<Campus> = emptyList(),
 ) {
+    internal fun withInstitutionalInstructorEmails(): TermCatalog = copy(
+        sections = sections.map { section ->
+            val instructors = section.instructors ?: return@map section
+            section.copy(instructors = instructors.map { it.copy(email = Instructor.institutionalEmail(it.email)) })
+        },
+    )
+
     fun recomputePostreqs(): TermCatalog {
         val map = mutableMapOf<CourseKey, MutableSet<CourseKey>>()
         for (course in courses) {
