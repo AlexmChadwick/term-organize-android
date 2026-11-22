@@ -39,6 +39,7 @@ import app.termorganize.ui.TermOrganizeTheme
 import app.termorganize.ui.UntimedSections
 import app.termorganize.ui.WeekCalendar
 import app.termorganize.ui.blockColors
+import app.termorganize.ui.conflictMarkerColor
 import app.termorganize.ui.contrastRatio
 import app.termorganize.logic.professors.CourseColors
 import org.junit.Assert.assertTrue
@@ -95,13 +96,11 @@ class ScheduleGridA11yTest {
         assertEquals(listOf("course/ENGW/1111"), opened)
     }
 
-    @Test fun conflictMarkerClearsContrastOnEveryBlockFillInBothThemes() {
-        for (dark in listOf(false, true)) {
-            CourseColors.palette.forEach { argb ->
-                val (fill, label) = blockColors(argb)
-                // The marker is drawn in the label color; the theme does not change block fills.
-                assertTrue("dark=$dark color=${Integer.toHexString(argb)}", contrastRatio(fill, label) >= 3f)
-            }
+    @Test fun conflictMarkerClearsContrastOnEveryBlockFill() {
+        // Block fills and the marker color are the same in light and dark themes, so one pass covers both.
+        CourseColors.palette.forEach { argb ->
+            val (fill, _) = blockColors(argb)
+            assertTrue("color=${Integer.toHexString(argb)}", contrastRatio(fill, conflictMarkerColor(argb)) >= 3f)
         }
     }
 
