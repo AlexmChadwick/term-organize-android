@@ -81,6 +81,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
+import java.text.Normalizer
 import java.util.Locale
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
@@ -634,6 +635,28 @@ class LogicTests {
         assertTrue(rawEmailViolations(payload("Write to office@example.com.")).isNotEmpty())
     }
 
+    @Test fun rawEmailCheckCatchesObfuscatedAndWhitespaceForms() {
+        fun prose(description: String) =
+            """{"sections":[{"instructors":[{"name":"Doe, J","email":"j.doe@neu.edu"}]}],"courses":[{"description":"$description"}]}"""
+        fun field(email: String) = """{"sections":[{"instructors":[{"name":"Doe, J","email":"$email"}]}]}"""
+        assertTrue(rawEmailViolations(prose("Ask test at example dot com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test&#64;example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test%40example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test\\uFF20example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu\\u200B")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu\\u00AD")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu\\u00A0x")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu@evil.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu!")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask test@neu.edu.")).isEmpty())
+        assertTrue(rawEmailViolations(prose("Class meets at noon and ends at 3")).isEmpty())
+        assertTrue(rawEmailViolations(field("x@neu.edu\\n")).isNotEmpty())
+        assertTrue(rawEmailViolations(field("x@neu.edu\\r\\n")).isNotEmpty())
+        assertTrue(rawEmailViolations(field(" x@neu.edu")).isNotEmpty())
+        assertTrue(rawEmailViolations(field("x@neu.edu\\u00A0")).isNotEmpty())
+        assertTrue(rawEmailViolations(field("x@neu.edu y@northeastern.edu")).isEmpty())
+    }
+
     @Test fun emailFieldTrailingDotIsRejected() {
         assertNull(Instructor.institutionalEmail("office@northeastern.edu."))
         assertNull(Instructor.institutionalEmail("office@neu.edu.."))
@@ -663,9 +686,13 @@ class LogicTests {
         private val allowedEmailDomains = setOf("northeastern.edu", "neu.edu")
         private val emailKey = Regex("""email""")
         private val fieldSeparators = Regex("""[\s,;<>]+""")
-        private val literalAddress = Regex("""[^\s@<>,;()\[\]"']+@[\p{L}\p{N}._-]+""")
+        private val asciiSpace = Regex("""[ \t\r\n]+""")
         private val obfuscatedAt = Regex("""\s*[\[({]\s*at\s*[\])}]\s*""", RegexOption.IGNORE_CASE)
         private val obfuscatedDot = Regex("""\s*[\[({]\s*dot\s*[\])}]\s*""", RegexOption.IGNORE_CASE)
+        private val plainWords = Regex("""(?<=\S)[ \t]+at[ \t]+(?=[\w-]+[ \t]+dot[ \t]+)""", RegexOption.IGNORE_CASE)
+        private val plainDot = Regex("""(?<=[\w-])[ \t]+dot[ \t]+(?=[\w-])""", RegexOption.IGNORE_CASE)
+        private val numericEntity = Regex("""&#([xX][0-9a-fA-F]+|[0-9]+);""")
+        private val percentRun = Regex("""(?:%[0-9a-fA-F]{2})+""")
 
         private fun allowedDomain(domain: String): Boolean =
             domain.all { it.code <= 0x7F } && domain.lowercase(Locale.ROOT) in allowedEmailDomains
@@ -674,6 +701,22 @@ class LogicTests {
             val at = candidate.indexOf('@')
             return at >= 1 && at == candidate.lastIndexOf('@') && allowedDomain(candidate.substring(at + 1))
         }
+
+        /** Undoes numeric entities and percent escapes so an encoded `@` is visible to the scan. */
+        private fun decoded(value: String): String {
+            val entities = numericEntity.replace(value) { m ->
+                val body = m.groupValues[1]
+                val code = if (body[0] == 'x' || body[0] == 'X') body.drop(1).toIntOrNull(16) else body.toIntOrNull()
+                if (code != null && Character.isValidCodePoint(code)) String(Character.toChars(code)) else m.value
+            }
+            return percentRun.replace(entities) { m ->
+                val bytes = m.value.split('%').filter { it.isNotEmpty() }.map { it.toInt(16).toByte() }.toByteArray()
+                bytes.toString(Charsets.UTF_8)
+            }
+        }
+
+        private fun hasEdgeWhitespace(value: String): Boolean =
+            value.isNotEmpty() && (value.first().isWhitespace() || value.last().isWhitespace() || value.first() == '\u00A0' || value.last() == '\u00A0')
 
         /** Parses raw JSON with no catalog sanitizer so escaped values are decoded and visible. */
         private fun rawStrings(text: String): List<Pair<Boolean, String>> {
@@ -690,19 +733,25 @@ class LogicTests {
             return out
         }
 
-        /** Email fields must be complete allowed candidates; every other string is scanned for literal and obfuscated addresses. */
+        /**
+         * Email fields must hold whole allowed candidates with no surrounding whitespace. Every other string is
+         * decoded, de-obfuscated and split on ASCII whitespace; each token that holds an `@` after NFKC (which also
+         * exposes fullwidth forms) must itself be a whole allowed candidate after at most one sentence period.
+         */
         fun rawEmailViolations(text: String): List<String> {
             val bad = mutableListOf<String>()
             for ((isEmailField, value) in rawStrings(text)) {
                 if (isEmailField) {
-                    value.split(fieldSeparators).filter { it.isNotEmpty() }
+                    if (hasEdgeWhitespace(value)) bad += "email field edge whitespace: ${value.trim()}"
+                    decoded(value).split(fieldSeparators).filter { it.isNotEmpty() }
                         .filterNot(::allowedCandidate).forEach { bad += "email field: $it" }
                     continue
                 }
-                val plain = value.replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
-                for (m in literalAddress.findAll(plain)) {
-                    val candidate = m.value.removeSuffix(".")
-                    if (!allowedCandidate(candidate)) bad += "text: ${m.value}"
+                val plain = decoded(value).replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
+                    .replace(plainWords, "@").replace(plainDot, ".")
+                for (raw in plain.split(asciiSpace).filter { it.isNotEmpty() }) {
+                    if ('@' !in Normalizer.normalize(raw, Normalizer.Form.NFKC)) continue
+                    if (!allowedCandidate(raw.removeSuffix("."))) bad += "text: $raw"
                 }
             }
             return bad
