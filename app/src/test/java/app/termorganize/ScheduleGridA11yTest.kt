@@ -9,10 +9,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -42,6 +45,7 @@ import app.termorganize.ui.blockColors
 import app.termorganize.ui.conflictMarkerColor
 import app.termorganize.ui.contrastRatio
 import app.termorganize.logic.professors.CourseColors
+import app.termorganize.logic.schedule.CalendarEvent
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -49,9 +53,15 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], qualifiers = "w320dp-h640dp-mdpi")
+@Config(
+    sdk = [33],
+    qualifiers = "w320dp-h640dp-mdpi",
+    instrumentedPackages = ["androidx.compose.ui.test.android"],
+    shadows = [ShadowWindowCapture::class],
+)
 class ScheduleGridA11yTest {
     @get:Rule
     val rule = createAndroidComposeRule<ComponentActivity>()
@@ -140,5 +150,66 @@ class ScheduleGridA11yTest {
         assertEquals(68f, loneBounds.width.value, 0.5f)
         assertTrue("morning lane ${laneBounds.width}", laneBounds.width <= 20.dp)
         rule.onNodeWithTag("block-${lone.id}").assertIsDisplayed()
+    }
+
+    @Config(sdk = [33], qualifiers = "w840dp-h900dp-mdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun conflictDotOnAWideLaneMatchesMarkerColor() {
+        assertConflictDotPixels(overlappingMonday("wide", 2), markerAtEnd = true)
+    }
+
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    @Test fun conflictDotOnANarrowLaneMatchesMarkerColor() {
+        assertConflictDotPixels(overlappingMonday("narrow", 6), markerAtEnd = false)
+    }
+
+    private fun overlappingMonday(prefix: String, count: Int): List<CalendarEvent> {
+        val sections = (0 until count).map { index ->
+            section("$prefix$index", "CS", "${3000 + index}", listOf(meeting(DaySet(listOf(1)), 600, 660)))
+        }
+        val courses = sections.map { Course(it.subject, it.number, it.courseKey.description, minCredits = 4.0, maxCredits = 4.0, detailsLoaded = true) }
+        val index = CatalogIndex.build(TermCatalog(term = Term("202710", "Fall 2026 Semester"), courses = courses, sections = sections))
+        val plan = SchedulePlan(
+            name = "Plan A",
+            termCode = "202710",
+            courses = courses.mapIndexedNotNull { i, course -> CourseKey.parse(course.code)?.let { PlanCourse(it, colorIndex = i) } },
+            selectedCRNs = sections.map { it.crn },
+        )
+        return ResolvedPlan(plan, index).events
+    }
+
+    private fun assertConflictDotPixels(events: List<CalendarEvent>, markerAtEnd: Boolean) {
+        val conflicts = events.filter { it.isConflict }
+        assertEquals(events.size, conflicts.size)
+        rule.setContent {
+            TermOrganizeTheme(dynamic = false, dark = false) {
+                WeekCalendar(events, false, 8, 21)
+            }
+        }
+        val markers = rule.onAllNodesWithTag("conflict-marker", useUnmergedTree = true)
+        assertEquals(conflicts.size, markers.fetchSemanticsNodes().size)
+        for (event in conflicts) {
+            val block = rule.onNodeWithTag("block-${event.id}").getUnclippedBoundsInRoot()
+            var matched = false
+            for (i in conflicts.indices) {
+                val bounds = markers[i].getUnclippedBoundsInRoot()
+                val centerX = (bounds.left + bounds.right) / 2
+                val centerY = (bounds.top + bounds.bottom) / 2
+                val inside = centerX in block.left..block.right && centerY in block.top..block.bottom
+                if (!inside) continue
+                val closerToEnd = block.right - centerX < centerX - block.left
+                assertEquals("marker edge for ${event.id}", markerAtEnd, closerToEnd)
+                val image = markers[i].captureToImage()
+                val pixel = image.toPixelMap()[image.width / 2, image.height / 2]
+                assertEquals(
+                    "color=${Integer.toHexString(event.color)} pixel=${Integer.toHexString(pixel.toArgb())}",
+                    conflictMarkerColor(event.color).toArgb(),
+                    pixel.toArgb(),
+                )
+                matched = true
+                break
+            }
+            assertTrue("marker for ${event.id}", matched)
+        }
     }
 }

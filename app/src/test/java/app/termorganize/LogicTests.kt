@@ -640,6 +640,14 @@ class LogicTests {
             """{"sections":[{"instructors":[{"name":"Doe, J","email":"j.doe@neu.edu"}]}],"courses":[{"description":"$description"}]}"""
         fun field(email: String) = """{"sections":[{"instructors":[{"name":"Doe, J","email":"$email"}]}]}"""
         assertTrue(rawEmailViolations(prose("Ask test at example dot com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask x at example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask example dot com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask x\\u00A0at\\u00A0example.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask x\\u202Fat\\u202Fexample.com")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask name\\u00A0at\\u00A0domain\\u00A0dot\\u00A0edu")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask name\\u202Fat\\u202Fdomain\\u202Fdot\\u202Fedu")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("Ask x\\u00A0at\\u00A0ab\\u00A0dot\\u00A0c")).isNotEmpty())
+        assertTrue(rawEmailViolations(prose("See mailto:x@neu.edu today")).isEmpty())
         assertTrue(rawEmailViolations(prose("Ask test&#64;example.com")).isNotEmpty())
         assertTrue(rawEmailViolations(prose("Ask test%40example.com")).isNotEmpty())
         assertTrue(rawEmailViolations(prose("Ask test\\uFF20example.com")).isNotEmpty())
@@ -691,6 +699,15 @@ class LogicTests {
         private val obfuscatedDot = Regex("""\s*[\[({]\s*dot\s*[\])}]\s*""", RegexOption.IGNORE_CASE)
         private val plainWords = Regex("""(?<=\S)[ \t]+at[ \t]+(?=[\w-]+[ \t]+dot[ \t]+)""", RegexOption.IGNORE_CASE)
         private val plainDot = Regex("""(?<=[\w-])[ \t]+dot[ \t]+(?=[\w-])""", RegexOption.IGNORE_CASE)
+        /**
+         * Web app WORDED patterns: "name at domain dot edu", "x at example.com", and "domain dot edu".
+         * The second form has a real dot, so the at/dot rewrites above never see it.
+         */
+        private val worded = listOf(
+            Regex("""\bat\s+[\w-]+\s+dot\s+[a-z]{2,}""", RegexOption.IGNORE_CASE),
+            Regex("""\w\s+at\s+(?![^\s@]*@)[\w-]+\.[a-z]{2,}\b""", RegexOption.IGNORE_CASE),
+            Regex("""\w\s+dot\s+(?:edu|com|org|net|gov|io)\b""", RegexOption.IGNORE_CASE),
+        )
         private val numericEntity = Regex("""&#([xX][0-9a-fA-F]+|[0-9]+);""")
         private val percentRun = Regex("""(?:%[0-9a-fA-F]{2})+""")
 
@@ -715,6 +732,10 @@ class LogicTests {
             }
         }
 
+        /** U+00A0 and U+202F are spaces for the word patterns, and stay glued for the address-token scan. */
+        private fun normalizeWordSpaces(value: String): String =
+            if ('\u00A0' !in value && '\u202F' !in value) value else value.replace('\u00A0', ' ').replace('\u202F', ' ')
+
         private fun hasEdgeWhitespace(value: String): Boolean =
             value.isNotEmpty() && (value.first().isWhitespace() || value.last().isWhitespace() || value.first() == '\u00A0' || value.last() == '\u00A0')
 
@@ -737,6 +758,8 @@ class LogicTests {
          * Email fields must hold whole allowed candidates with no surrounding whitespace. Every other string is
          * decoded, de-obfuscated and split on ASCII whitespace; each token that holds an `@` after NFKC (which also
          * exposes fullwidth forms) must itself be a whole allowed candidate after at most one sentence period.
+         * U+00A0 and U+202F become plain spaces before the word patterns run. The un-normalized text is still
+         * scanned, so an address glued to one of those spaces stays a violation.
          */
         fun rawEmailViolations(text: String): List<String> {
             val bad = mutableListOf<String>()
@@ -747,14 +770,22 @@ class LogicTests {
                         .filterNot(::allowedCandidate).forEach { bad += "email field: $it" }
                     continue
                 }
-                val plain = decoded(value).replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
+                val decodedValue = decoded(value)
+                val forWords = normalizeWordSpaces(decodedValue)
+                worded.firstNotNullOfOrNull { it.find(forWords) }?.let { bad += "text: worded ${it.value}" }
+                val plain = forWords.replace(obfuscatedAt, "@").replace(obfuscatedDot, ".")
                     .replace(plainWords, "@").replace(plainDot, ".")
-                for (raw in plain.split(asciiSpace).filter { it.isNotEmpty() }) {
-                    if ('@' !in Normalizer.normalize(raw, Normalizer.Form.NFKC)) continue
-                    if (!allowedCandidate(raw.removeSuffix("."))) bad += "text: $raw"
-                }
+                scanAddressTokens(plain, bad)
+                if (decodedValue != forWords) scanAddressTokens(decodedValue, bad)
             }
             return bad
+        }
+
+        private fun scanAddressTokens(text: String, bad: MutableList<String>) {
+            for (raw in text.split(asciiSpace).filter { it.isNotEmpty() }) {
+                if ('@' !in Normalizer.normalize(raw, Normalizer.Form.NFKC)) continue
+                if (!allowedCandidate(raw.removeSuffix("."))) bad += "text: $raw"
+            }
         }
 
         fun rawAllowedEmailCount(text: String): Int =
