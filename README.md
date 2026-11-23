@@ -53,12 +53,14 @@ echo "sdk.dir=$HOME/android-sdk" > local.properties
 Install `app/build/outputs/apk/debug/app-debug.apk`, or open the project in Android Studio and run the `app` configuration. Debug and local release builds use the Android debug keystore on the machine. No signing keys are stored in this repository.
 
 ```bash
-./gradlew :app:testDebugUnitTest   # JUnit + Robolectric
+./gradlew test                     # JUnit + Robolectric
 ./gradlew :app:lint
 ./gradlew :app:assembleRelease
 ```
 
-GitHub Actions (`.github/workflows/ci.yml`) runs those unit tests, lint, and `assembleDebug` on Ubuntu with JDK 17, and uploads the debug APK.
+`./gradlew test` runs the debug unit-test variant. Release unit tests are not registered: Compose hosts need `ui-test-manifest`, and that dependency stays on `debugImplementation` so the test activity is not in the release APK. `:app:testDebugUnitTest` runs the same suite.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs `./gradlew test`, lint, and `assembleDebug` on Ubuntu with JDK 17, and uploads the debug APK.
 
 Unit tests load the bundled catalog from `app/src/main/assets/catalog/`. The Android Gradle Plugin stores that gzip as plain JSON in the APK; the app opens either name. Instrumented tests live in `app/src/androidTest` and need a device:
 
