@@ -101,13 +101,14 @@ android {
     }
 }
 
-// ui-test-manifest is debugImplementation so ComponentActivity is not shipped in
-// the release APK. Robolectric resolves that activity from the variant resource
-// APK. AGP builds the release unit-test APK from the release manifest, so those
-// tests cannot launch a Compose host. Unit tests stay on the debug variant.
-// ./gradlew test runs that suite.
 androidComponents {
     beforeVariants(selector().withBuildType("release")) { builder ->
+        // Release unit tests stay off. Robolectric resolves activities from the
+        // release-manifest resource APK, and ui-test-manifest is debugImplementation,
+        // so ComponentActivity is missing. Release unit tests do not run R8 anyway.
+        // https://github.com/robolectric/robolectric/pull/4736
+        // https://developer.android.com/develop/ui/compose/testing#setup
+        // https://github.com/android/compose-samples/issues/969
         (builder as HasHostTestsBuilder).hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = false
     }
 }
