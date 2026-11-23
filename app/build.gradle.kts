@@ -1,3 +1,6 @@
+import com.android.build.api.variant.HasHostTestsBuilder
+import com.android.build.api.variant.HostTestBuilder
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -95,6 +98,17 @@ android {
         warningsAsErrors = false
         checkReleaseBuilds = true
         disable += setOf("ObsoleteLintCustomCheck", "GradleDependency", "AndroidGradlePluginVersion")
+    }
+}
+
+// ui-test-manifest is debugImplementation so ComponentActivity is not shipped in
+// the release APK. Robolectric resolves that activity from the variant resource
+// APK. AGP builds the release unit-test APK from the release manifest, so those
+// tests cannot launch a Compose host. Unit tests stay on the debug variant.
+// ./gradlew test runs that suite.
+androidComponents {
+    beforeVariants(selector().withBuildType("release")) { builder ->
+        (builder as HasHostTestsBuilder).hostTests.getValue(HostTestBuilder.UNIT_TEST_TYPE).enable = false
     }
 }
 
