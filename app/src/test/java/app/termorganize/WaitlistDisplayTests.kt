@@ -2,6 +2,9 @@ package app.termorganize
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import android.os.Looper
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.test.core.app.ApplicationProvider
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.Course
 import app.termorganize.core.model.CourseKey
@@ -19,7 +22,15 @@ import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.search.CatalogIndex
 import app.termorganize.logic.watchlist.WatchlistComparison
+import app.termorganize.logic.schedule.ScheduleEngine
+import app.termorganize.logic.schedule.ScheduleSortOption
+import app.termorganize.logic.search.SearchEngine
+import app.termorganize.logic.search.SearchFilters
+import app.termorganize.logic.search.SearchQuery
+import app.termorganize.logic.search.SearchSort
+import app.termorganize.ui.AppModel
 import app.termorganize.ui.SectionSeatsText
+import org.robolectric.Shadows.shadowOf
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -97,17 +108,91 @@ class WaitlistDisplayTests {
 
     @Test fun seatsRowShowsTheWaitlistOnce() {
         rule.setContent { SectionSeatsText(section(seats = 0, cap = 10, count = 7)) }
-        rule.onNodeWithText("Full · 0 of 15 seats · Waitlist 7/10").assertExists()
+        rule.onNodeWithText("Full · Waitlist 7/10").assertExists()
     }
 
     @Test fun seatsRowForQueuedSectionWithSeatsHasNoDuplicateWord() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 3)) }
-        rule.onNodeWithText("0 of 15 seats · Waitlist 3/10").assertExists()
+        rule.onNodeWithText("Full · Waitlist 3/10").assertExists()
     }
 
     @Test fun seatsRowForOpenSection() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 0)) }
-        rule.onNodeWithText("Open · 2 of 15 seats · Waitlist 0/10").assertExists()
+        rule.onNodeWithText("2 of 15 open · Waitlist 0/10").assertExists()
+    }
+
+    @Test fun seatsRowIsSpokenAsOneMergedDescriptionWithTheWaitlistNumbers() {
+        rule.setContent { SectionSeatsText(section(seats = 0, cap = 10, count = 3)) }
+        rule.onNodeWithContentDescription("Full, 0 of 15 seats open, 3 of 10 on the waitlist").assertExists()
+    }
+
+    @Test fun spokenLabelForQueuedSectionWithSeatsAndOpenSection() {
+        assertEquals("Waitlist, 0 of 15 seats open, 3 of 10 on the waitlist", section(seats = 2, cap = 10, count = 3).seatsSpokenLabel)
+        assertEquals("Open, 2 of 15 seats open, 0 of 10 on the waitlist", section(seats = 2, cap = 10, count = 0).seatsSpokenLabel)
+        assertEquals("Full, 0 of 15 seats open", section(seats = 0).seatsSpokenLabel)
+    }
+
+    @Test fun seatsLabelMatchesTheWebCopy() {
+        assertEquals("Full", section(seats = 0).seatsLabel)
+        assertEquals("Full", section(seats = 2, cap = 10, count = 3).seatsLabel)
+        assertEquals("2 of 15 open", section(seats = 2).seatsLabel)
+        assertEquals("2 open", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 2).seatsLabel)
+    }
+
+    @Test fun overbookedSectionIsFullWithZeroOpenSeats() {
+        val s = section(seats = -2)
+        assertEquals(0, s.openSeats)
+        assertFalse(s.isOpen)
+    }
+
+    @Test fun openSeatsOnlyFilterRejectsQueuedSectionWithSeats() {
+        val filters = SearchFilters(openSeatsOnly = true)
+        assertFalse(filters.matches(section(seats = 5, cap = 10, count = 3)))
+        assertFalse(filters.matches(section(seats = 0)))
+        assertTrue(filters.matches(section(seats = 5)))
+    }
+
+    @Test fun openSeatsSortIgnoresSeatsBehindAQueue() {
+        val queued = gsec("1", seats = 30, count = 3, start = 9)
+        val open = gsec("2", seats = 4, count = 0, start = 11)
+        fun course(number: String) = Course("CS", number, "CS $number", minCredits = 4.0, maxCredits = 4.0, detailsLoaded = true)
+        val index = CatalogIndex.build(
+            TermCatalog(
+                term = Term("202710", "Fall 2026 Semester"),
+                courses = listOf(course("3000"), course("3100")),
+                sections = listOf(queued, open.copy(number = "3100")),
+            ),
+        )
+        val codes = SearchEngine.search(SearchQuery("", sort = SearchSort.OPEN_SEATS), index).results.map { it.course.code }
+        assertEquals(listOf("CS 3100", "CS 3000"), codes)
+    }
+
+    @Test fun scheduleMeasureCountsOnlyOpenSeats() {
+        val g = ScheduleEngine.measure(listOf(gsec("1", seats = 30, count = 3, start = 9), gsec("2", seats = 4, count = 0, start = 11)))
+        assertEquals(0, g.minSeats)
+        assertEquals(4, g.totalSeats)
+        assertEquals(1, g.fullSections)
+    }
+
+    @Test fun generatorRanksByOpenSeatsNotRawSeats() {
+        val index = catalog(gsec("1", seats = 30, count = 3, start = 9), gsec("2", seats = 4, count = 0, start = 11))
+        val plan = SchedulePlan(name = "P", termCode = "202710", courses = listOf(PlanCourse(CourseKey("CS", "3000"), colorIndex = 0)))
+        val schedules = ScheduleGenerator.generate(ScheduleCourseInput.inputs(plan, index), ScheduleFilters(), sort = ScheduleSortOption.MOST_SEATS).schedules
+        assertEquals(listOf("2", "1"), schedules.map { it.crns.single() })
+    }
+
+    @Test fun watchSeedsTheOpenSeatCountSoAQueueIsNotRecordedAsOpen() {
+        System.setProperty("termorganize.freshdb", "1")
+        System.setProperty("termorganize.dbname", "waitlist-watch.db")
+        val model = AppModel(ApplicationProvider.getApplicationContext<TermOrganizeApp>())
+        val deadline = System.currentTimeMillis() + 90_000
+        while (model.index.value == null && System.currentTimeMillis() < deadline) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(50)
+        }
+        assertTrue(model.index.value != null)
+        model.watch(section(seats = 2, cap = 10, count = 3), "Title")
+        assertEquals(0, model.user.value.watchlist.single().lastSeatsRemaining)
     }
 
     private fun watch(seats: Int) = WatchItem(
