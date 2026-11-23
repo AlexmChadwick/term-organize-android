@@ -6,8 +6,10 @@ package app.termorganize
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isSelected
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -43,7 +45,7 @@ class ScheduleRootTest {
     private fun hasNode(matcher: SemanticsMatcher) = rule.onAllNodes(matcher).fetchSemanticsNodes().isNotEmpty()
 
     private fun openSchedule() {
-        rule.waitUntil(timeoutMillis = 90_000) { hasNode(hasText("Search the catalog")) && !hasNode(hasText("—")) }
+        rule.waitUntil(timeoutMillis = 90_000) { hasNode(hasText("Search the catalog")) && !hasNode(hasText("\u2014")) }
         model = ViewModelProvider(rule.activity)[AppModel::class.java]
         model.addToPlan(CourseKey("CS", "3000"))
         model.addToPlan(CourseKey("AACE", "6000"), "35746")
@@ -67,6 +69,7 @@ class ScheduleRootTest {
         rule.waitUntil(timeoutMillis = 10_000) { hasNode(hasTestTag("back")) }
         rule.onNodeWithTag("back").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { hasNode(hasText("Generate schedules")) }
+        rule.onNode(hasText("Schedule") and isSelected()).assertIsSelected()
         rule.onNode(hasText("Schedule") and SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)).performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("Kept draft").assertExists()
         assertEquals(shown, options())
