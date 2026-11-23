@@ -7,6 +7,7 @@ import app.termorganize.core.model.CourseKey
 import app.termorganize.logic.degree.PlanCourse
 import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.schedule.ScheduleGenerationResult
+import app.termorganize.logic.schedule.SchedulePreferences
 import app.termorganize.ui.ScheduleStamp
 import app.termorganize.ui.ScheduleUiState
 import org.junit.Assert.assertNull
@@ -29,5 +30,12 @@ class ScheduleUiStateTest {
         ui.store(ScheduleStamp.of(plan, "202710"), result)
         assertNull(ui.resultFor(ScheduleStamp.of(plan.copy(courses = emptyList()), "202710")))
         assertNull(ui.resultFor(ScheduleStamp.of(plan.copy(id = "other"), "202710")))
+    }
+
+    @Test fun keptResultIsDroppedWhenPreferencesChange() {
+        val ui = ScheduleUiState()
+        ui.store(ScheduleStamp.of(plan, "202710"), result)
+        val changed = plan.copy(preferences = SchedulePreferences(maxClassesPerDay = 2))
+        assertNull(ui.resultFor(ScheduleStamp.of(changed, "202710")))
     }
 }
