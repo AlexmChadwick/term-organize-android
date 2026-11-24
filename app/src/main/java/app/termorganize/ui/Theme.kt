@@ -25,7 +25,7 @@ private val TealDark = Color(0xFF7DCFC6)
 private val Ink = Color(0xFF142226)
 private val Paper = Color(0xFFF6F1E8)
 
-private val Light = lightColorScheme(
+internal val Light = lightColorScheme(
     primary = Teal,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFC8EBE7),
@@ -62,7 +62,7 @@ private val Light = lightColorScheme(
     onErrorContainer = Color(0xFF410E0B),
 )
 
-private val Dark = darkColorScheme(
+internal val Dark = darkColorScheme(
     primary = TealDark,
     onPrimary = Color(0xFF042F2E),
     primaryContainer = Color(0xFF134E4B),

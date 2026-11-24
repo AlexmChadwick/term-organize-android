@@ -455,7 +455,7 @@ private fun Stat(value: String, label: String, modifier: Modifier = Modifier) {
 @Composable
 internal fun SectionSeatsText(section: CourseSection) {
     Text(
-        listOfNotNull(section.seatsLabel, section.waitlistLabel).joinToString(" · "),
+        listOfNotNull(section.seatsLabel, section.waitlistLabel).joinToString(", "),
         modifier = Modifier.semantics { contentDescription = section.seatsSpokenLabel },
         style = MaterialTheme.typography.bodyMedium,
         color = if (section.isWaitlisted) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,

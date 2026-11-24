@@ -391,20 +391,30 @@ data class CourseSection(
             return weekly.joinToString(" · ") { "${it.days.compactLabel} ${it.timeLabel}" }
         }
     /** "Full", "N of M open", or "N open" when the capacity is unknown. Matches the web copy. */
-    val seatsLabel: String get() = when {
-        !isOpen -> "Full"
-        seatCapacity > 0 -> "$openSeats of $seatCapacity open"
-        else -> "$openSeats open"
+    val seatsLabel: String get() {
+        val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
+        return when {
+            seatsRemaining <= 0 -> "Full"
+            seatCapacity > 0 -> "$clamped of $seatCapacity open"
+            else -> "$clamped open"
+        }
     }
     /** Spoken form of the seats row, carrying the waitlist numbers the visible text abbreviates. */
     val seatsSpokenLabel: String get() {
-        val seats = if (seatCapacity > 0) "$openSeats of $seatCapacity seats open" else "$openSeats seats open"
+        val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
+        val status = if (seatsRemaining <= 0) "Full" else null
+        val seats = when {
+            seatCapacity > 1 -> "$clamped of $seatCapacity seats open"
+            seatCapacity == 1 -> "$clamped of 1 seat open"
+            clamped == 1 -> "1 seat open"
+            else -> "$clamped seats open"
+        }
         val queue = when {
             waitlistCapacity > 0 -> "$waitlistCount of $waitlistCapacity on the waitlist"
             waitlistCount > 0 -> "$waitlistCount on the waitlist"
             else -> null
         }
-        return listOfNotNull(availabilityLabel, seats, queue).joinToString(", ")
+        return listOfNotNull(status, seats, queue).joinToString(", ")
     }
 
     fun conflicts(other: CourseSection): Boolean {

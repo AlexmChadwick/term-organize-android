@@ -28,6 +28,8 @@ import app.termorganize.logic.search.SearchFilters
 import app.termorganize.logic.search.SearchQuery
 import app.termorganize.logic.search.SearchSort
 import app.termorganize.ui.SectionSeatsText
+import app.termorganize.ui.Light
+import app.termorganize.ui.Dark
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -105,17 +107,17 @@ class WaitlistDisplayTests {
 
     @Test fun seatsRowShowsTheWaitlistOnce() {
         rule.setContent { SectionSeatsText(section(seats = 0, cap = 10, count = 7)) }
-        rule.onNodeWithText("Full · Waitlist 7/10").assertExists()
+        rule.onNodeWithText("Full, Waitlist 7/10").assertExists()
     }
 
     @Test fun seatsRowForQueuedSectionWithSeatsHasNoDuplicateWord() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 3)) }
-        rule.onNodeWithText("Full · Waitlist 3/10").assertExists()
+        rule.onNodeWithText("0 of 15 open, Waitlist 3/10").assertExists()
     }
 
     @Test fun seatsRowForOpenSection() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 0)) }
-        rule.onNodeWithText("2 of 15 open · Waitlist 0/10").assertExists()
+        rule.onNodeWithText("2 of 15 open, Waitlist 0/10").assertExists()
     }
 
     @Test fun seatsRowIsSpokenAsOneMergedDescriptionWithTheWaitlistNumbers() {
@@ -124,16 +126,51 @@ class WaitlistDisplayTests {
     }
 
     @Test fun spokenLabelForQueuedSectionWithSeatsAndOpenSection() {
-        assertEquals("Waitlist, 0 of 15 seats open, 3 of 10 on the waitlist", section(seats = 2, cap = 10, count = 3).seatsSpokenLabel)
-        assertEquals("Open, 2 of 15 seats open, 0 of 10 on the waitlist", section(seats = 2, cap = 10, count = 0).seatsSpokenLabel)
+        assertEquals("0 of 15 seats open, 3 of 10 on the waitlist", section(seats = 2, cap = 10, count = 3).seatsSpokenLabel)
+        assertEquals("2 of 15 seats open, 0 of 10 on the waitlist", section(seats = 2, cap = 10, count = 0).seatsSpokenLabel)
         assertEquals("Full, 0 of 15 seats open", section(seats = 0).seatsSpokenLabel)
     }
 
     @Test fun seatsLabelMatchesTheWebCopy() {
         assertEquals("Full", section(seats = 0).seatsLabel)
-        assertEquals("Full", section(seats = 2, cap = 10, count = 3).seatsLabel)
+        assertEquals("0 of 15 open", section(seats = 2, cap = 10, count = 3).seatsLabel)
         assertEquals("2 of 15 open", section(seats = 2).seatsLabel)
         assertEquals("2 open", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 2).seatsLabel)
+    }
+
+    @Test fun seatsLabelClampsWhenSeatsExceedCapacity() {
+        val s = section(seats = 20, cap = 10, count = 0)
+        assertEquals("15 of 15 open", s.seatsLabel)
+        assertEquals("15 of 15 seats open, 0 of 10 on the waitlist", s.seatsSpokenLabel)
+    }
+
+    @Test fun spokenLabelSingularPluralWhenCapacityUnknown() {
+        val one = CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 1)
+        val two = CourseSection("2", "CS", "1000", seatCapacity = 0, seatsRemaining = 2)
+        assertEquals("1 open", one.seatsLabel)
+        assertEquals("1 seat open", one.seatsSpokenLabel)
+        assertEquals("2 open", two.seatsLabel)
+        assertEquals("2 seats open", two.seatsSpokenLabel)
+    }
+
+    @Test fun tertiaryContrastOnSurfaceContainerHighestPassesAA() {
+        val lightContrast = contrast(Light.tertiary, Light.surfaceContainerHighest)
+        val darkContrast = contrast(Dark.tertiary, Dark.surfaceContainerHighest)
+        assertTrue(lightContrast >= 4.5)
+        assertTrue(darkContrast >= 4.5)
+    }
+
+    private fun luminance(color: androidx.compose.ui.graphics.Color): Double {
+        fun channel(c: Float): Double = if (c <= 0.04045f) c / 12.92 else Math.pow(((c + 0.055) / 1.055).toDouble(), 2.4)
+        return 0.2126 * channel(color.red) + 0.7152 * channel(color.green) + 0.0722 * channel(color.blue)
+    }
+
+    private fun contrast(c1: androidx.compose.ui.graphics.Color, c2: androidx.compose.ui.graphics.Color): Double {
+        val l1 = luminance(c1)
+        val l2 = luminance(c2)
+        val lighter = maxOf(l1, l2)
+        val darker = minOf(l1, l2)
+        return (lighter + 0.05) / (darker + 0.05)
     }
 
     @Test fun overbookedSectionIsFullWithZeroOpenSeats() {
