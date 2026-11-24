@@ -2,9 +2,7 @@ package app.termorganize
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import android.os.Looper
 import androidx.compose.ui.test.onNodeWithContentDescription
-import androidx.test.core.app.ApplicationProvider
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.Course
 import app.termorganize.core.model.CourseKey
@@ -22,15 +20,14 @@ import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.search.CatalogIndex
 import app.termorganize.logic.watchlist.WatchlistComparison
+import app.termorganize.logic.watchlist.newWatchItem
 import app.termorganize.logic.schedule.ScheduleEngine
 import app.termorganize.logic.schedule.ScheduleSortOption
 import app.termorganize.logic.search.SearchEngine
 import app.termorganize.logic.search.SearchFilters
 import app.termorganize.logic.search.SearchQuery
 import app.termorganize.logic.search.SearchSort
-import app.termorganize.ui.AppModel
 import app.termorganize.ui.SectionSeatsText
-import org.robolectric.Shadows.shadowOf
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -182,17 +179,13 @@ class WaitlistDisplayTests {
     }
 
     @Test fun watchSeedsTheOpenSeatCountSoAQueueIsNotRecordedAsOpen() {
-        System.setProperty("termorganize.freshdb", "1")
-        System.setProperty("termorganize.dbname", "waitlist-watch.db")
-        val model = AppModel(ApplicationProvider.getApplicationContext<TermOrganizeApp>())
-        val deadline = System.currentTimeMillis() + 90_000
-        while (model.index.value == null && System.currentTimeMillis() < deadline) {
-            shadowOf(Looper.getMainLooper()).idle()
-            Thread.sleep(50)
-        }
-        assertTrue(model.index.value != null)
-        model.watch(section(seats = 2, cap = 10, count = 3), "Title")
-        assertEquals(0, model.user.value.watchlist.single().lastSeatsRemaining)
+        val item = newWatchItem(section(seats = 2, cap = 10, count = 3), "Title")
+        assertEquals(0, item.lastSeatsRemaining)
+    }
+
+    @Test fun watchSeedsOpenSeatsWhenNoQueue() {
+        val item = newWatchItem(section(seats = 2, cap = 10, count = 0), "Title")
+        assertEquals(2, item.lastSeatsRemaining)
     }
 
     private fun watch(seats: Int) = WatchItem(

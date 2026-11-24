@@ -67,6 +67,7 @@ import app.termorganize.logic.degree.SchedulePlan
 import app.termorganize.logic.degree.UserData
 import app.termorganize.logic.degree.UserJson
 import app.termorganize.logic.degree.WatchItem
+import app.termorganize.logic.watchlist.newWatchItem
 import app.termorganize.logic.nl.PreferencesParser
 import app.termorganize.logic.offering.AttributeFetching
 import app.termorganize.logic.offering.CourseAttributeRepository
@@ -757,7 +758,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             _olderNote.value = "Checking Banner for other terms…"
             val note = runCatching {
                 withContext(Dispatchers.IO) {
-                    val client = BannerClient()
+                    val client = BannerClient.factory()
                     try {
                         val terms = client.fetchTerms().filter { it.college == Term.College.NEU && !it.isViewOnly }
                         _otherTerms.value = terms
@@ -792,13 +793,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     fun watch(section: CourseSection, title: String) {
         val term = _index.value?.term?.code ?: return
-        val item = WatchItem(
-            term, section.crn, section.courseKey, title, section.scheduleSummary,
-            lastSeatsRemaining = section.openSeats,
-            lastWaitlistRemaining = section.waitlistRemaining,
-            seatCapacity = section.seatCapacity,
-            notifyOnWaitlist = true,
-        )
+        val item = newWatchItem(section, title, term)
         update { data ->
             if (data.watchlist.any { it.id == item.id }) data
             else data.copy(watchlist = data.watchlist + item)
@@ -939,7 +934,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val fresh = runCatching {
                 withContext(Dispatchers.IO) {
-                    BannerClient().let { client ->
+                    BannerClient.factory().let { client ->
                         try {
                             val sections = client.refreshCourse(term, key, previous)
                             CpsRestriction.apply(sections, client.fetchRestrictions(term, sections.map { it.crn }))

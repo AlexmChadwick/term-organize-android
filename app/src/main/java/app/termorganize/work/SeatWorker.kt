@@ -29,7 +29,7 @@ class SeatCheckWorker(context: Context, params: WorkerParameters) : CoroutineWor
         val data = UserJson.decode(stored.json)
         if (!data.preferences.backgroundRefreshEnabled || data.watchlist.isEmpty()) return Result.success()
         val live = mutableMapOf<String, MutableMap<CourseKey, MutableList<CourseSection>>>()
-        val client = BannerClient()
+        val client = BannerClient.factory()
         try {
             for (item in data.watchlist.distinctBy { it.termCode to it.courseKey }) {
                 val sections = runCatching { client.refreshCourse(item.termCode, item.courseKey, emptyList()) }.getOrDefault(emptyList())
