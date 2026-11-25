@@ -108,3 +108,5 @@ Not ported, or only partly covered:
 Live Banner is used by Refresh this term, Refresh seats, Older terms, offering history, course-catalog lookup, and section-attribute lookup. Unit tests do not require the network. If Banner is down, those actions report the error and leave the snapshot in place.
 
 `connectedDebugAndroidTest` passed on an Android 14 AOSP ATD emulator (AVD `nto`, software CPU). The home test waits with UiAutomator: the catalog decode and the progress indicator keep the main looper busy, so the Compose test rule never sees an idle app on that emulator. Robolectric covers the same disclaimer and CS 3000 search.
+
+See [web SeatText parity](docs/PARITY.md) for Android and web seat display differences.
