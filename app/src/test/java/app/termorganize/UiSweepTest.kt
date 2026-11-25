@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.rules.ActivityScenarioRule
+import app.termorganize.core.banner.FakeBannerRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -45,7 +46,9 @@ class UiSweepPhoneTest {
 
     private val compose = createAndroidComposeRule<MainActivity>()
 
-    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-phone.db")).around(compose)
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())
+        .around(FreshDatabase("sweep-phone.db"))
+        .around(compose)
 
     @Test fun lightAndDark() = sweep(compose, "phone")
 }
@@ -65,7 +68,9 @@ class UiSweepTabletTest {
 
     private val compose = createAndroidComposeRule<MainActivity>()
 
-    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-tablet.db")).around(compose)
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())
+        .around(FreshDatabase("sweep-tablet.db"))
+        .around(compose)
 
     @Test fun lightAndDark() = sweep(compose, "tablet")
 }
@@ -73,15 +78,19 @@ class UiSweepTabletTest {
 private class FreshDatabase(private val name: String) : TestRule {
     override fun apply(base: Statement, description: Description): Statement = object : Statement() {
         override fun evaluate() {
-            System.setProperty("termorganize.freshdb", "1")
-            System.setProperty("termorganize.dbname", name)
-            app.termorganize.core.banner.BannerClient.factory = { app.termorganize.core.banner.FakeBannerClient() }
+            val previousFreshDb = System.setProperty("termorganize.freshdb", "1")
+            val previousDbName = System.setProperty("termorganize.dbname", name)
             try {
                 base.evaluate()
             } finally {
-                app.termorganize.core.banner.BannerClient.resetFactory()
+                restoreProperty("termorganize.freshdb", previousFreshDb)
+                restoreProperty("termorganize.dbname", previousDbName)
             }
         }
+    }
+
+    private fun restoreProperty(key: String, value: String?) {
+        if (value == null) System.clearProperty(key) else System.setProperty(key, value)
     }
 }
 

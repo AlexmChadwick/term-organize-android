@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import app.termorganize.core.banner.BannerClient
 import app.termorganize.core.banner.FakeBannerClient
+import app.termorganize.core.banner.FakeBannerRule
 import org.junit.AfterClass
 import org.junit.BeforeClass
 import org.junit.Rule
@@ -33,7 +34,10 @@ class AppUiTest {
         }
     }
 
-    @get:Rule
+    @get:Rule(order = 0)
+    val fakeBannerRule = FakeBannerRule()
+
+    @get:Rule(order = 1)
     val rule = createAndroidComposeRule<MainActivity>()
 
     @Test fun homeShowsTheDisclaimerAndOpensSearch() {
