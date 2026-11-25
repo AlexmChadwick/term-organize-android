@@ -404,10 +404,8 @@ data class CourseSection(
         val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
         val status = if (seatsRemaining <= 0) "Full" else null
         val seats = when {
-            seatCapacity > 1 -> "$clamped of $seatCapacity seats open"
-            seatCapacity == 1 -> "$clamped of 1 seat open"
-            clamped == 1 -> "1 seat open"
-            else -> "$clamped seats open"
+            seatCapacity > 0 -> "$clamped of $seatCapacity open"
+            else -> "$clamped open"
         }
         val queue = when {
             waitlistCapacity > 0 -> "$waitlistCount of $waitlistCapacity on the waitlist"
