@@ -88,9 +88,6 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
-        unitTests.all {
-            it.systemProperty("termorganize.banner.fake", "1")
-        }
     }
 
     lint {
