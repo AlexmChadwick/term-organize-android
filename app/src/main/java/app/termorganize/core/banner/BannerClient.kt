@@ -4,7 +4,6 @@
 
 package app.termorganize.core.banner
 
-import androidx.annotation.VisibleForTesting
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.AttributeInfo
 import app.termorganize.core.model.Campus
@@ -303,20 +302,19 @@ open class BannerClient(
         runCatching { httpClient.close() }
     }
 
-    companion object {
-        private val mutex = Mutex()
+}
 
-        @VisibleForTesting
-        internal var factory: () -> BannerClient = { BannerClient() }
+internal class BannerProvider(private val createClient: () -> BannerClient) {
+    fun create(): BannerClient = createClient()
 
-        suspend fun <T> shared(block: suspend (BannerClient) -> T): T = mutex.withLock {
-            val client = factory()
-            try { block(client) } finally { client.close() }
-        }
+    suspend fun <T> shared(block: suspend (BannerClient) -> T): T = sharedMutex.withLock {
+        val client = create()
+        try { block(client) } finally { client.close() }
+    }
 
-        @VisibleForTesting
-        internal fun resetFactory() {
-            factory = { BannerClient() }
-        }
+    private companion object {
+        val sharedMutex = Mutex()
     }
 }
+
+internal val liveBannerProvider = BannerProvider { BannerClient() }

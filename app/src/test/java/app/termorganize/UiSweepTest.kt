@@ -35,15 +35,6 @@ import java.io.File
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w411dp-h840dp-mdpi")
 class UiSweepPhoneTest {
-    companion object {
-        @org.junit.BeforeClass @JvmStatic fun fakeBanner() {
-            app.termorganize.core.banner.BannerClient.factory = { app.termorganize.core.banner.FakeBannerClient() }
-        }
-        @org.junit.AfterClass @JvmStatic fun resetBanner() {
-            app.termorganize.core.banner.BannerClient.resetFactory()
-        }
-    }
-
     private val compose = createAndroidComposeRule<MainActivity>()
 
     @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())
@@ -57,15 +48,6 @@ class UiSweepPhoneTest {
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w1280dp-h900dp-mdpi")
 class UiSweepTabletTest {
-    companion object {
-        @org.junit.BeforeClass @JvmStatic fun fakeBanner() {
-            app.termorganize.core.banner.BannerClient.factory = { app.termorganize.core.banner.FakeBannerClient() }
-        }
-        @org.junit.AfterClass @JvmStatic fun resetBanner() {
-            app.termorganize.core.banner.BannerClient.resetFactory()
-        }
-    }
-
     private val compose = createAndroidComposeRule<MainActivity>()
 
     @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())

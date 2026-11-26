@@ -17,7 +17,8 @@ import android.provider.CalendarContract
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import app.termorganize.core.banner.BannerClient
+import app.termorganize.core.banner.BannerProvider
+import app.termorganize.core.banner.appBannerProvider
 import app.termorganize.core.banner.BannerParsers
 import app.termorganize.core.banner.CatalogBuilder
 import app.termorganize.core.model.AppJson
@@ -115,7 +116,12 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.GZIPInputStream
 
-class AppModel(app: Application) : AndroidViewModel(app) {
+class AppModel internal constructor(
+    app: Application,
+    private val banner: BannerProvider,
+) : AndroidViewModel(app) {
+    constructor(app: Application) : this(app, appBannerProvider())
+
     private val bundledCache = HashMap<String, TermCatalog>()
     private val dao = AppDatabase.create(app).userDao()
     private val catalogs = CatalogStore(File(app.filesDir, "catalogs")) { code ->
@@ -134,9 +140,9 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     private val courseInfoLock = Mutex()
     private val courseInfos by lazy {
         CourseInfoStore(
-            CourseInfoRepository(BannerCourseInfoFetcher(), offeringDirectory),
-            OfferingHistoryRepository(BannerOfferingFetcher(), offeringDirectory),
-            attributeRepository = CourseAttributeRepository(BannerAttributeFetcher(), offeringDirectory),
+            CourseInfoRepository(BannerCourseInfoFetcher(banner), offeringDirectory),
+            OfferingHistoryRepository(BannerOfferingFetcher(banner), offeringDirectory),
+            attributeRepository = CourseAttributeRepository(BannerAttributeFetcher(banner), offeringDirectory),
         )
     }
     private val _courseInfo = MutableStateFlow(CourseInfoSnapshot())
@@ -231,7 +237,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun downloadTerm(term: Term): TermCatalog {
         _syncLabel.value = "Connecting to Banner…"
-        return BannerClient.shared { client ->
+        return banner.shared { client ->
             val downloaded = client.fetchAllSections(term.code) { fetched, total ->
                 _syncLabel.value = "Downloading sections $fetched of $total"
             }
@@ -266,7 +272,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
 
     private fun refreshTermList() {
         viewModelScope.launch(Dispatchers.IO) {
-            val remote = runCatching { BannerClient.shared { it.fetchTerms() } }
+            val remote = runCatching { banner.shared { it.fetchTerms() } }
             val terms = remote.getOrElse { catalogs.loadRemoteTerms() }
             if (remote.isSuccess) catalogs.saveRemoteTerms(terms)
             val open = _index.value?.term
@@ -293,7 +299,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             val loaded = listOfNotNull(_index.value)
             val history = runCatching {
                 withContext(Dispatchers.IO) {
-                    OfferingHistoryRepository(BannerOfferingFetcher(), offeringDirectory).history(keys, loaded)
+                    OfferingHistoryRepository(BannerOfferingFetcher(banner), offeringDirectory).history(keys, loaded)
                 }
             }.getOrElse { OfferingHistory(checkedKeys = keys.toSet()) }
             _offering.value = history
@@ -758,7 +764,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
             _olderNote.value = "Checking Banner for other terms…"
             val note = runCatching {
                 withContext(Dispatchers.IO) {
-                    val client = BannerClient.factory()
+                    val client = banner.create()
                     try {
                         val terms = client.fetchTerms().filter { it.college == Term.College.NEU && !it.isViewOnly }
                         _otherTerms.value = terms
@@ -894,7 +900,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val info = runCatching {
                 withContext(Dispatchers.IO) {
-                    BannerClient.shared { client ->
+                    banner.shared { client ->
                         client.fetchCourseInfo(key, term) {
                             BannerParsers.SubjectLookup(client.fetchSubjects(term))
                         }
@@ -934,7 +940,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val fresh = runCatching {
                 withContext(Dispatchers.IO) {
-                    BannerClient.factory().let { client ->
+                    banner.create().let { client ->
                         try {
                             val sections = client.refreshCourse(term, key, previous)
                             CpsRestriction.apply(sections, client.fetchRestrictions(term, sections.map { it.crn }))
@@ -957,7 +963,7 @@ class AppModel(app: Application) : AndroidViewModel(app) {
         val missing = sections.filter { it.restrictions == null }.map { it.crn }
         if (missing.isEmpty()) return sections
         val found = runCatching {
-            withContext(Dispatchers.IO) { BannerClient.shared { it.fetchRestrictions(term, missing) } }
+            withContext(Dispatchers.IO) { banner.shared { it.fetchRestrictions(term, missing) } }
         }.getOrDefault(emptyMap())
         return CpsRestriction.apply(sections, found)
     }
@@ -1021,26 +1027,26 @@ class AppModel(app: Application) : AndroidViewModel(app) {
     fun freeDayLabel(days: DaySet) = days.shortLabel
 }
 
-private class BannerOfferingFetcher : OfferingFetching {
-    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
+private class BannerOfferingFetcher(private val banner: BannerProvider) : OfferingFetching {
+    override suspend fun terms(): List<Term> = banner.shared { it.fetchTerms() }
     override suspend fun offeredCourses(term: String, courses: List<CourseKey>): Set<CourseKey> =
-        BannerClient.shared { it.fetchOfferedCourses(term, courses) }
+        banner.shared { it.fetchOfferedCourses(term, courses) }
 }
 
-private class BannerAttributeFetcher : AttributeFetching {
-    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
+private class BannerAttributeFetcher(private val banner: BannerProvider) : AttributeFetching {
+    override suspend fun terms(): List<Term> = banner.shared { it.fetchTerms() }
     override suspend fun sectionAttributes(term: String, courses: List<CourseKey>): Map<CourseKey, Set<String>> {
-        val sections = BannerClient.shared { it.fetchSections(term, courses) }
+        val sections = banner.shared { it.fetchSections(term, courses) }
         return sections.filterValues { it.isNotEmpty() }.mapValues { (_, listed) ->
             listed.flatMap { it.sectionAttributes.orEmpty() }.map { it.code }.filter { it != HONORS_ATTRIBUTE_CODE }.toSet()
         }
     }
 }
 
-private class BannerCourseInfoFetcher : CourseInfoFetching {
+private class BannerCourseInfoFetcher(private val banner: BannerProvider) : CourseInfoFetching {
     private val subjects = HashMap<String, BannerParsers.SubjectLookup>()
-    override suspend fun terms(): List<Term> = BannerClient.shared { it.fetchTerms() }
-    override suspend fun catalogEntry(key: CourseKey, term: String): CourseInfo? = BannerClient.shared { client ->
+    override suspend fun terms(): List<Term> = banner.shared { it.fetchTerms() }
+    override suspend fun catalogEntry(key: CourseKey, term: String): CourseInfo? = banner.shared { client ->
         client.fetchCourseInfo(key, term) {
             subjects[term] ?: BannerParsers.SubjectLookup(client.fetchSubjects(term)).also { subjects[term] = it }
         }

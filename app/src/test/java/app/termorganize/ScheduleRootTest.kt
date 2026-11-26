@@ -16,15 +16,11 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.ViewModelProvider
-import app.termorganize.core.banner.BannerClient
-import app.termorganize.core.banner.FakeBannerClient
 import app.termorganize.core.banner.FakeBannerRule
 import app.termorganize.core.model.CourseKey
 import app.termorganize.ui.AppModel
-import org.junit.AfterClass
 import org.junit.Assert.assertEquals
 import org.junit.Before
-import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -35,15 +31,6 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w411dp-h840dp-mdpi")
 class ScheduleRootTest {
-    companion object {
-        @BeforeClass @JvmStatic fun fakeBanner() {
-            BannerClient.factory = { FakeBannerClient() }
-        }
-        @AfterClass @JvmStatic fun resetBanner() {
-            BannerClient.resetFactory()
-        }
-    }
-
     @get:Rule(order = 0)
     val fakeBannerRule = FakeBannerRule()
 

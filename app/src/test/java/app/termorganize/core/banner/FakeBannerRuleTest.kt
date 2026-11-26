@@ -16,24 +16,25 @@ class FakeBannerRuleTest {
 
     @Test
     fun ruleInstallsFakeBannerClient() {
-        val client = BannerClient.factory()
+        val client = appBannerProvider().create()
         assertTrue("Factory must produce FakeBannerClient under FakeBannerRule", client is FakeBannerClient)
     }
 
     @Test
     fun ruleRestoresFactoryAfterExecution() {
-        val originalFactory = BannerClient.factory
+        val originalFactory = DebugBannerComposition.overrideProvider
         val customFactory: () -> BannerClient = { FakeBannerClient(emptyList()) }
         val customRule = FakeBannerRule(customFactory)
         val statement = customRule.apply(
             object : Statement() {
                 override fun evaluate() {
-                    assertSame(customFactory, BannerClient.factory)
+                    assertTrue(appBannerProvider().create() is FakeBannerClient)
+                    assertTrue(appBannerProvider() !== originalFactory)
                 }
             },
             Description.EMPTY
         )
         statement.evaluate()
-        assertSame(originalFactory, BannerClient.factory)
+        assertSame(originalFactory, DebugBannerComposition.overrideProvider)
     }
 }
