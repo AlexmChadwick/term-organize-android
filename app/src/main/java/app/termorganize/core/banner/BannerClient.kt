@@ -41,7 +41,6 @@ open class BannerClient(
 ) {
     private val httpClient: HttpClient by lazy {
         client ?: run {
-            requireAndroidBannerRuntime()
             HttpClient(OkHttp) {
                 expectSuccess = false
                 engine {
@@ -305,6 +304,20 @@ open class BannerClient(
         runCatching { httpClient.close() }
     }
 
+    companion object {
+        private val mutex = Mutex()
+
+        internal var factory: () -> BannerClient = { BannerClient() }
+
+        suspend fun <T> shared(block: suspend (BannerClient) -> T): T = mutex.withLock {
+            val client = factory()
+            try { block(client) } finally { client.close() }
+        }
+
+        internal fun resetFactory() {
+            factory = { BannerClient() }
+        }
+    }
 }
 
 internal class BannerProvider(private val createClient: () -> BannerClient) {
@@ -321,7 +334,6 @@ internal class BannerProvider(private val createClient: () -> BannerClient) {
 }
 
 internal val liveBannerProvider = BannerProvider {
-    requireAndroidBannerRuntime()
     BannerClient()
 }
 

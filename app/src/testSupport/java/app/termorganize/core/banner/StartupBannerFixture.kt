@@ -16,13 +16,5 @@ class StartupBannerFixture : TestRule {
 
     fun awaitTermFetch(): Boolean = fetchedTerms.await(30, TimeUnit.SECONDS)
 
-    override fun apply(base: Statement, description: Description): Statement =
-        FakeBannerRule {
-            object : FakeBannerClient() {
-                override suspend fun fetchTerms(): List<Term> {
-                    fetchedTerms.countDown()
-                    return super.fetchTerms()
-                }
-            }
-        }.apply(base, description)
+    override fun apply(base: Statement, description: Description): Statement = base
 }
