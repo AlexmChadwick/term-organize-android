@@ -32,6 +32,11 @@ jobs:
       - name: Resolve unit test dependencies, lint, and build the debug APK
         run: ./gradlew --no-daemon :app:prepareDebugUnitTests :app:lint :app:assembleDebug :app:compileDebugAndroidTestKotlin --stacktrace
 
+      - name: Verify fixed release Banner composition
+        run: |
+          ./gradlew --no-daemon :app:compileReleaseKotlin
+          tools/verify-banner-release.sh
+
       - name: Cache the Robolectric SDK for offline execution
         run: |
           set -euo pipefail
