@@ -29,8 +29,33 @@ jobs:
             exit 1
           fi
 
-      - name: Unit tests, lint, and debug APK
-        run: ./gradlew :app:testDebugUnitTest :app:lint :app:assembleDebug --stacktrace
+      - name: Resolve unit test dependencies, lint, and build the debug APK
+        run: ./gradlew --no-daemon :app:prepareDebugUnitTests :app:lint :app:assembleDebug --stacktrace
+
+      - name: Cache the Robolectric SDK for offline execution
+        run: |
+          set -euo pipefail
+          sdk=13-robolectric-9030017-i7
+          artifact=android-all-instrumented
+          directory="$HOME/.m2/repository/org/robolectric/$artifact/$sdk"
+          mkdir -p "$directory"
+          for extension in jar jar.sha512 pom pom.sha512; do
+            file="$artifact-$sdk.$extension"
+            curl --fail --silent --show-error --retry 3 \
+              "https://repo.maven.apache.org/maven2/org/robolectric/$artifact/$sdk/$file" \
+              -o "$directory/$file"
+          done
+
+      - name: Run unit tests with loopback only
+        run: |
+          sudo --preserve-env=HOME,PATH,JAVA_HOME,ANDROID_HOME,ANDROID_SDK_ROOT \
+            unshare --net bash -eu -c '
+              ip link set lo up
+              test -z "$(ip route show)"
+              test -z "$(ip -6 route show default)"
+              exec setpriv --reuid="$1" --regid="$2" --init-groups \
+                ./gradlew --offline --no-daemon :app:testDebugUnitTest --stacktrace
+            ' _ "$(id -u)" "$(id -g)"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

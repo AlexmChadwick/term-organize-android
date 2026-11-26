@@ -98,6 +98,15 @@ android {
     }
 }
 
+tasks.register("prepareDebugUnitTests") {
+    val debugUnitTests = provider { tasks.named<Test>("testDebugUnitTest").get() }
+    dependsOn(debugUnitTests.map { it.taskDependencies.getDependencies(it) })
+    doLast {
+        // Resolve test runtime artifacts before CI enters the network namespace.
+        debugUnitTests.get().inputs.files.files
+    }
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2025.08.01")
     implementation(composeBom)

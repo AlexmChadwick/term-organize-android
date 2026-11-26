@@ -40,13 +40,16 @@ open class BannerClient(
     client: HttpClient? = null,
 ) {
     private val httpClient: HttpClient by lazy {
-        client ?: HttpClient(OkHttp) {
-            expectSuccess = false
-            engine {
-                config {
-                    connectTimeout(8, TimeUnit.SECONDS)
-                    readTimeout(20, TimeUnit.SECONDS)
-                    callTimeout(25, TimeUnit.SECONDS)
+        client ?: run {
+            requireAndroidBannerRuntime()
+            HttpClient(OkHttp) {
+                expectSuccess = false
+                engine {
+                    config {
+                        connectTimeout(8, TimeUnit.SECONDS)
+                        readTimeout(20, TimeUnit.SECONDS)
+                        callTimeout(25, TimeUnit.SECONDS)
+                    }
                 }
             }
         }
@@ -317,4 +320,14 @@ internal class BannerProvider(private val createClient: () -> BannerClient) {
     }
 }
 
-internal val liveBannerProvider = BannerProvider { BannerClient() }
+internal val liveBannerProvider = BannerProvider {
+    requireAndroidBannerRuntime()
+    BannerClient()
+}
+
+private fun requireAndroidBannerRuntime() {
+    // ART reports Dalvik on Android. Host JVMs must inject a fixture or an HTTP engine.
+    check(System.getProperty("java.vm.name") == "Dalvik") {
+        "Live Banner requires Android. Inject a Banner fixture for JVM tests."
+    }
+}
