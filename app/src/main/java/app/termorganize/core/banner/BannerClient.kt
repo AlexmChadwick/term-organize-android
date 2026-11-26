@@ -41,6 +41,7 @@ open class BannerClient(
 ) {
     private val httpClient: HttpClient by lazy {
         client ?: run {
+            requireAndroidBannerRuntime()
             HttpClient(OkHttp) {
                 expectSuccess = false
                 engine {
@@ -321,6 +322,7 @@ internal class BannerProvider(private val createClient: () -> BannerClient) {
 }
 
 internal val liveBannerProvider = BannerProvider {
+    requireAndroidBannerRuntime()
     BannerClient()
 }
 
