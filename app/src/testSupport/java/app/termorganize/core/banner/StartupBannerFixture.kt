@@ -25,3 +25,4 @@ class StartupBannerFixture : TestRule {
                 }
             }
         }.apply(base, description)
+}

@@ -1,11 +1,13 @@
 // Copyright (C) 2026 Term Organize contributors.
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package app.termorganize
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import app.termorganize.core.banner.StartupBannerFixture
 import app.termorganize.ui.AppModel
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -26,7 +28,10 @@ class StartupBannerFixtureTest {
     @Test
     fun startupUsesTheDeviceTestFixture() {
         val model = compose.runOnIdle { ViewModelProvider(compose.activity)[AppModel::class.java] }
-        compose.waitUntil(timeoutMillis = 60_000) { model.availableTerms.value.size > 1 }
+        compose.waitUntil(timeoutMillis = 60_000) {
+            compose.runOnIdle { model.error.value != null || model.availableTerms.value.size > 1 }
+        }
+        assertNull(model.status.value, model.error.value)
         assertTrue("Startup must fetch terms through the fixture", banner.termWasFetched)
     }
 }

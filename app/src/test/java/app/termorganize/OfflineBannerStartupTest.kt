@@ -14,6 +14,7 @@ import app.termorganize.data.CatalogStore
 import app.termorganize.ui.AppModel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
@@ -46,7 +47,10 @@ class OfflineBannerStartupTest {
     @Test
     fun startupWithoutFakeBannerRuleUsesLocalTerms() {
         val model = compose.runOnIdle { ViewModelProvider(compose.activity)[AppModel::class.java] }
-        compose.waitUntil(timeoutMillis = 60_000) { model.otherTerms.value.isNotEmpty() }
+        compose.waitUntil(timeoutMillis = 60_000) {
+            compose.runOnIdle { model.error.value != null || model.otherTerms.value.isNotEmpty() }
+        }
+        assertNull(model.status.value, model.error.value)
 
         assertEquals(listOf(cachedTerm), model.otherTerms.value)
         assertThrows(IllegalStateException::class.java) { appBannerProvider().create() }
