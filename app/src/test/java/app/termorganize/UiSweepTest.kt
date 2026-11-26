@@ -367,7 +367,7 @@ private fun step(name: String, block: () -> Unit) {
 internal fun createSweepOutputDirectory(): File {
     val root = File(System.getProperty("termorganize.screenshot.dir") ?: System.getProperty("java.io.tmpdir"))
     Files.createDirectories(root.toPath())
-    return root.resolve("sweep").apply { mkdir() }
+    return Files.createTempDirectory(root.toPath(), "sweep-").toFile()
 }
 
 private fun captureScreenshot(
