@@ -390,7 +390,7 @@ data class CourseSection(
             if (weekly.isEmpty()) return if (isOnline) "Asynchronous / online" else "Times TBA"
             return weekly.joinToString(" · ") { "${it.days.compactLabel} ${it.timeLabel}" }
         }
-    /** "Full", "N of M open", or "N open" when the capacity is unknown. Matches the web copy. */
+    /** Visible seat status, with Android's capacity wording documented in docs/PARITY.md. */
     val seatsLabel: String get() {
         val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
         return when {

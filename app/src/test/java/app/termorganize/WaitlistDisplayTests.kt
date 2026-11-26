@@ -131,8 +131,9 @@ class WaitlistDisplayTests {
         assertEquals("Full, 0 of 15 open", section(seats = 0).seatsSpokenLabel)
     }
 
-    @Test fun seatsLabelMatchesTheWebCopy() {
+    @Test fun seatsLabelFollowsAndroidCapacityPolicy() {
         assertEquals("Full", section(seats = 0).seatsLabel)
+        assertEquals("Full", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 0).seatsLabel)
         assertEquals("0 of 15 open", section(seats = 2, cap = 10, count = 3).seatsLabel)
         assertEquals("2 of 15 open", section(seats = 2).seatsLabel)
         assertEquals("2 open", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 2).seatsLabel)
