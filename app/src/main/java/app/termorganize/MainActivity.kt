@@ -12,11 +12,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.ViewModelProvider
 import app.termorganize.ui.AppModel
 import app.termorganize.ui.TermOrganizeRoot
 
 class MainActivity : ComponentActivity() {
-    private val model: AppModel by viewModels()
+    // Bind the model to this activity's application instead of the process-wide factory cache.
+    private val model: AppModel by viewModels {
+        ViewModelProvider.AndroidViewModelFactory(application)
+    }
     private val pending = mutableStateOf<String?>(null)
     private val openPdf = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) model.importUri(uri)

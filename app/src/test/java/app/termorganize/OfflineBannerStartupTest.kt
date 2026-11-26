@@ -3,6 +3,7 @@
 
 package app.termorganize
 
+import android.app.Application
 import android.content.Context
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
@@ -15,6 +16,7 @@ import app.termorganize.ui.AppModel
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Rule
 import org.junit.Test
@@ -47,6 +49,7 @@ class OfflineBannerStartupTest {
     @Test
     fun startupWithoutFakeBannerRuleUsesLocalTerms() {
         val model = compose.runOnIdle { ViewModelProvider(compose.activity)[AppModel::class.java] }
+        assertSame(ApplicationProvider.getApplicationContext<Application>(), model.getApplication<Application>())
         compose.waitUntil(timeoutMillis = 60_000) {
             compose.runOnIdle { model.error.value != null || model.otherTerms.value.isNotEmpty() }
         }
