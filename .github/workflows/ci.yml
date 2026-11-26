@@ -30,7 +30,7 @@ jobs:
           fi
 
       - name: Resolve unit test dependencies, lint, and build the debug APK
-        run: ./gradlew --no-daemon :app:prepareDebugUnitTests :app:lint :app:assembleDebug --stacktrace
+        run: ./gradlew --no-daemon :app:prepareDebugUnitTests :app:lint :app:assembleDebug :app:compileDebugAndroidTestKotlin --stacktrace
 
       - name: Cache the Robolectric SDK for offline execution
         run: |
