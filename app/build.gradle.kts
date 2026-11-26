@@ -102,6 +102,12 @@ android {
     }
 }
 
+tasks.withType<Test>().configureEach {
+    providers.systemProperty("termorganize.screenshot.dir").orNull?.let {
+        systemProperty("termorganize.screenshot.dir", it)
+    }
+}
+
 tasks.register("prepareDebugUnitTests") {
     val debugUnitTests = provider { tasks.named<Test>("testDebugUnitTest").get() }
     dependsOn(debugUnitTests.map { it.taskDependencies.getDependencies(it) })
