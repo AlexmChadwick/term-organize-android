@@ -29,6 +29,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify documented seat wording policy
+        run: python3 tools/verify-seat-parity.py
+
       - name: Resolve unit test dependencies, lint, and build the debug APK
         run: ./gradlew --no-daemon :app:prepareDebugUnitTests :app:lint :app:assembleDebug :app:compileDebugAndroidTestKotlin --stacktrace
 
