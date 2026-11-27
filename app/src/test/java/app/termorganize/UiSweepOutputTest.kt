@@ -31,4 +31,32 @@ class UiSweepOutputTest {
             if (previous == null) System.clearProperty(key) else System.setProperty(key, previous)
         }
     }
+
+    @Test
+    fun sweepTempDirectoryIsRemovedWhenNoOutputPropertyIsSet() {
+        val key = "termorganize.screenshot.dir"
+        val tmpKey = "java.io.tmpdir"
+        val previous = System.clearProperty(key)
+        val previousTmp = System.setProperty(tmpKey, temp.newFolder("tmp").path)
+        try {
+            var seen: java.io.File? = null
+            runCatching {
+                withSweepOutputDirectory { dir ->
+                    seen = dir
+                    dir.resolve("phone-light-home.png").writeText("x")
+                    error("sweep failed")
+                }
+            }
+            assertEquals(true, seen!!.name.startsWith("sweep-"))
+            assertEquals(false, seen!!.exists())
+
+            val kept = System.setProperty(key, temp.newFolder("kept").path)
+            assertEquals(null, kept)
+            val dir = withSweepOutputDirectory { it.also { d -> d.resolve("a.png").writeText("x") } }
+            assertEquals(true, dir.resolve("a.png").exists())
+        } finally {
+            if (previous == null) System.clearProperty(key) else System.setProperty(key, previous)
+            System.setProperty(tmpKey, previousTmp)
+        }
+    }
 }
