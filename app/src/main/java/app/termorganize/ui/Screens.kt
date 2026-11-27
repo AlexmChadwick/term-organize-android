@@ -451,12 +451,12 @@ private fun Stat(value: String, label: String, modifier: Modifier = Modifier) {
     }
 }
 
-/** The status word is dropped for a queued section with seats: the "Waitlist n/cap" fact already says it. */
+/** Visible text follows the web ("Full" or "N of M open", then "Waitlist n/cap"); TalkBack gets one merged description. */
 @Composable
 internal fun SectionSeatsText(section: CourseSection) {
-    val status = if (section.isWaitlisted && section.seatsRemaining > 0) null else section.availabilityLabel
     Text(
-        listOfNotNull(status, section.seatsLabel, section.waitlistLabel).joinToString(" · "),
+        listOfNotNull(section.seatsLabel, section.waitlistLabel).joinToString(", "),
+        modifier = Modifier.semantics { contentDescription = section.seatsSpokenLabel },
         style = MaterialTheme.typography.bodyMedium,
         color = if (section.isWaitlisted) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
     )

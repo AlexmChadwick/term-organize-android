@@ -40,6 +40,23 @@ data class WatchlistAlert(
     val url: String get() = "termorganize://section/$termCode/$crn"
 }
 
+/** A new watch, seeded with open seats so a queued section alerts only once seats truly open. */
+fun newWatchItem(
+    section: CourseSection,
+    title: String,
+    termCode: String = "",
+): WatchItem = WatchItem(
+    termCode = termCode,
+    crn = section.crn,
+    courseKey = section.courseKey,
+    courseTitle = title,
+    sectionLabel = section.scheduleSummary,
+    lastSeatsRemaining = section.openSeats,
+    lastWaitlistRemaining = section.waitlistRemaining,
+    seatCapacity = section.seatCapacity,
+    notifyOnWaitlist = true,
+)
+
 object WatchlistComparison {
     data class Outcome(
         val items: List<WatchItem>,

@@ -13,7 +13,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.termorganize.R
-import app.termorganize.core.banner.BannerClient
+import app.termorganize.core.banner.BannerProvider
+import app.termorganize.core.banner.appBannerProvider
 import app.termorganize.core.model.CourseKey
 import app.termorganize.core.model.CourseSection
 import app.termorganize.data.AppDatabase
@@ -22,14 +23,20 @@ import app.termorganize.logic.degree.UserJson
 import app.termorganize.logic.watchlist.WatchlistComparison
 import java.util.concurrent.TimeUnit
 
-class SeatCheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+class SeatCheckWorker internal constructor(
+    context: Context,
+    params: WorkerParameters,
+    private val banner: BannerProvider,
+) : CoroutineWorker(context, params) {
+    constructor(context: Context, params: WorkerParameters) : this(context, params, appBannerProvider())
+
     override suspend fun doWork(): Result {
         val dao = AppDatabase.create(applicationContext).userDao()
         val stored = dao.get() ?: return Result.success()
         val data = UserJson.decode(stored.json)
         if (!data.preferences.backgroundRefreshEnabled || data.watchlist.isEmpty()) return Result.success()
         val live = mutableMapOf<String, MutableMap<CourseKey, MutableList<CourseSection>>>()
-        val client = BannerClient()
+        val client = banner.create()
         try {
             for (item in data.watchlist.distinctBy { it.termCode to it.courseKey }) {
                 val sections = runCatching { client.refreshCourse(item.termCode, item.courseKey, emptyList()) }.getOrDefault(emptyList())

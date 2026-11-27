@@ -15,15 +15,20 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import app.termorganize.core.banner.StartupBannerFixture
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.rules.RuleChain
 
 @RunWith(AndroidJUnit4::class)
 class AppInstrumentedTest {
+    private val banner = StartupBannerFixture()
+
     @get:Rule
-    val scenario = ActivityScenarioRule(MainActivity::class.java)
+    val scenario = RuleChain.outerRule(banner).around(ActivityScenarioRule(MainActivity::class.java))
 
     @Test fun homeShowsTheDisclaimerAndFindsAlgorithms() {
         val device = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
@@ -34,6 +39,7 @@ class AppInstrumentedTest {
         if (loaded == null) {
             org.junit.Assert.fail("catalog did not finish loading. visible: ${visible(device)}")
         }
+        assertTrue("Startup must fetch terms through the fixture", banner.awaitTermFetch())
         val search = scrollTo(device, "Search the catalog")
         if (search == null) fail("search button missing. visible: ${visible(device)}")
         search.click()

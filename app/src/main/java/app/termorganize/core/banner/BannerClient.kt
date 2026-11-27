@@ -36,30 +36,36 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 
-class BannerClient(
-    private val client: HttpClient = HttpClient(OkHttp) {
-        expectSuccess = false
-        engine {
-            config {
-                connectTimeout(8, TimeUnit.SECONDS)
-                readTimeout(20, TimeUnit.SECONDS)
-                callTimeout(25, TimeUnit.SECONDS)
+open class BannerClient(
+    client: HttpClient? = null,
+) {
+    private val httpClient: HttpClient by lazy {
+        client ?: run {
+            requireAndroidBannerRuntime()
+            HttpClient(OkHttp) {
+                expectSuccess = false
+                engine {
+                    config {
+                        connectTimeout(8, TimeUnit.SECONDS)
+                        readTimeout(20, TimeUnit.SECONDS)
+                        callTimeout(25, TimeUnit.SECONDS)
+                    }
+                }
             }
         }
-    },
-) {
+    }
     private val base = "https://nubanner.neu.edu/StudentRegistrationSsb/ssb/"
 
-    suspend fun fetchTerms(): List<Term> {
+    open suspend fun fetchTerms(): List<Term> {
         val terms = BannerTermList.collect { page ->
-            val text = client.get(base + "classSearch/getTerms?offset=$page&max=${BannerTermList.PAGE_SIZE}&searchTerm=").bodyAsText()
+            val text = httpClient.get(base + "classSearch/getTerms?offset=$page&max=${BannerTermList.PAGE_SIZE}&searchTerm=").bodyAsText()
             runCatching { AppJson.catalog.decodeFromString<List<BannerTerm>>(text) }.getOrDefault(emptyList())
         }
         return terms.map { Term(it.code, HTMLText.decodeEntities(it.description)) }
     }
 
-    suspend fun openSession(term: String): String {
-        val response: HttpResponse = client.post(base + "term/search?mode=search") {
+    open suspend fun openSession(term: String): String {
+        val response: HttpResponse = httpClient.post(base + "term/search?mode=search") {
             contentType(ContentType.Application.FormUrlEncoded)
             setBody("term=$term&studyPath=&studyPathText=&startDatepicker=&endDatepicker=")
         }
@@ -70,19 +76,19 @@ class BannerClient(
         return cookies.joinToString("; ")
     }
 
-    suspend fun searchSections(term: String, cookie: String, subject: String? = null, number: String? = null, offset: Int = 0, pageSize: Int = 500): List<BannerSection> {
+    open suspend fun searchSections(term: String, cookie: String, subject: String? = null, number: String? = null, offset: Int = 0, pageSize: Int = 500): List<BannerSection> {
         val query = buildString {
             append("txt_term=$term&pageOffset=$offset&pageMaxSize=$pageSize&sortColumn=subjectDescription&sortDirection=asc")
             if (subject != null) append("&txt_subject=$subject")
             if (number != null) append("&txt_courseNumber=$number")
         }
-        val text = client.get(base + "searchResults/searchResults?$query") {
+        val text = httpClient.get(base + "searchResults/searchResults?$query") {
             header(HttpHeaders.Cookie, cookie)
         }.bodyAsText()
         return AppJson.catalog.decodeFromString<BannerSectionPage>(text).data.orEmpty()
     }
 
-    suspend fun refreshCourse(term: String, key: CourseKey, previous: List<CourseSection>): List<CourseSection> {
+    open suspend fun refreshCourse(term: String, key: CourseKey, previous: List<CourseSection>): List<CourseSection> {
         val cookie = openSession(term)
         val banner = searchSections(term, cookie, key.subject, key.number)
         val exact = banner.filter { it.subject == key.subject && it.courseNumber == key.number }
@@ -101,7 +107,7 @@ class BannerClient(
      * Restriction lists for each section. Requests run one after another so a course with many
      * sections does not stampede Banner. A failed section stays out of the map and remains unknown.
      */
-    suspend fun fetchRestrictions(term: String, crns: List<String>): Map<String, List<SectionRestriction>> {
+    open suspend fun fetchRestrictions(term: String, crns: List<String>): Map<String, List<SectionRestriction>> {
         val wanted = crns.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         if (wanted.isEmpty()) return emptyMap()
         val cookie = openSession(term)
@@ -114,8 +120,8 @@ class BannerClient(
         return found
     }
 
-    suspend fun facultyMeetings(term: String, crn: String, cookie: String): List<BannerMeetingFaculty> {
-        val text = client.get(base + "searchResults/getFacultyMeetingTimes?term=$term&courseReferenceNumber=$crn") {
+    open suspend fun facultyMeetings(term: String, crn: String, cookie: String): List<BannerMeetingFaculty> {
+        val text = httpClient.get(base + "searchResults/getFacultyMeetingTimes?term=$term&courseReferenceNumber=$crn") {
             header(HttpHeaders.Cookie, cookie)
         }.bodyAsText()
         return runCatching {
@@ -124,7 +130,7 @@ class BannerClient(
     }
 
     /** Fills empty faculty lists. Failures keep the section as Banner returned it. */
-    suspend fun attachFaculty(
+    open suspend fun attachFaculty(
         term: String,
         sections: List<BannerSection>,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
@@ -153,17 +159,17 @@ class BannerClient(
         return sections.map { updates[it.courseReferenceNumber] ?: it }
     }
 
-    suspend fun fetchSubjects(term: String): List<Subject> =
+    open suspend fun fetchSubjects(term: String): List<Subject> =
         fetchCodes("classSearch/get_subject", term, 900).map { Subject(it.code, HTMLText.decodeEntities(it.description).trim()) }
 
-    suspend fun fetchCampuses(term: String): List<Campus> =
+    open suspend fun fetchCampuses(term: String): List<Campus> =
         fetchCodes("classSearch/get_campus", term, 200).map { Campus(it.code, HTMLText.decodeEntities(it.description).trim()) }
 
-    suspend fun fetchAttributes(term: String): List<AttributeInfo> =
+    open suspend fun fetchAttributes(term: String): List<AttributeInfo> =
         fetchCodes("classSearch/get_attribute", term, 500).map { AttributeInfo(it.code, HTMLText.decodeEntities(it.description).trim()) }
 
-    suspend fun resetSearch(cookie: String) {
-        client.post(base + "classSearch/resetDataForm") {
+    open suspend fun resetSearch(cookie: String) {
+        httpClient.post(base + "classSearch/resetDataForm") {
             header(HttpHeaders.Cookie, cookie)
         }
     }
@@ -172,7 +178,7 @@ class BannerClient(
      * Every section in a term. Pages until Banner returns a short page or the reported total.
      * A safety cap keeps a bad total from paging forever.
      */
-    suspend fun fetchAllSections(
+    open suspend fun fetchAllSections(
         term: String,
         pageSize: Int = 500,
         onProgress: (fetched: Int, total: Int) -> Unit = { _, _ -> },
@@ -200,7 +206,7 @@ class BannerClient(
      * Live sections for specific courses. One session, reset between courses.
      * Banner treats the course number as a prefix, so only exact matches are kept.
      */
-    suspend fun fetchSections(term: String, courses: List<CourseKey>): Map<CourseKey, List<BannerSection>> {
+    open suspend fun fetchSections(term: String, courses: List<CourseKey>): Map<CourseKey, List<BannerSection>> {
         if (courses.isEmpty()) return emptyMap()
         val cookie = openSession(term)
         val out = LinkedHashMap<CourseKey, List<BannerSection>>()
@@ -213,7 +219,7 @@ class BannerClient(
     }
 
     /** Which of [courses] have at least one exact section in [term]. One session, reset between courses. */
-    suspend fun fetchOfferedCourses(term: String, courses: List<CourseKey>): Set<CourseKey> {
+    open suspend fun fetchOfferedCourses(term: String, courses: List<CourseKey>): Set<CourseKey> {
         if (courses.isEmpty()) return emptySet()
         val cookie = openSession(term)
         val offered = mutableSetOf<CourseKey>()
@@ -229,7 +235,7 @@ class BannerClient(
      * Catalog entry for one course in one term: title, credits, requisites, and mutual exclusions.
      * Null when that term's catalog does not list the course.
      */
-    suspend fun fetchCourseInfo(
+    open suspend fun fetchCourseInfo(
         course: CourseKey,
         term: String,
         subjects: suspend () -> BannerParsers.SubjectLookup,
@@ -260,13 +266,13 @@ class BannerClient(
 
     private suspend fun catalogLists(course: CourseKey, term: String): Boolean {
         val query = "searchTerm=${course.subject}%20${course.number}&term=$term&offset=1&max=10"
-        val text = client.get(base + "courseSearch/get_subjectcoursecombo?$query").bodyAsText()
+        val text = httpClient.get(base + "courseSearch/get_subjectcoursecombo?$query").bodyAsText()
         val items = runCatching { AppJson.catalog.decodeFromString<List<BannerCodeDescription>>(text) }.getOrElse { return false }
         return BannerParsers.catalogCodes(items, course)
     }
 
     private suspend fun postRestrictions(term: String, crn: String, cookie: String): String {
-        val response = client.post(base + "searchResults/getRestrictions") {
+        val response = httpClient.post(base + "searchResults/getRestrictions") {
             contentType(ContentType.Application.FormUrlEncoded)
             header(HttpHeaders.Cookie, cookie)
             setBody("term=$term&courseReferenceNumber=$crn")
@@ -275,7 +281,7 @@ class BannerClient(
     }
 
     private suspend fun postCourseForm(path: String, term: String, course: CourseKey): String {
-        val response = client.post(base + path) {
+        val response = httpClient.post(base + path) {
             contentType(ContentType.Application.FormUrlEncoded)
             setBody("courseNumber=${course.number}&subjectCode=${course.subject}&term=$term")
         }
@@ -284,24 +290,45 @@ class BannerClient(
 
     private suspend fun searchPage(term: String, cookie: String, offset: Int, pageSize: Int): BannerSectionPage {
         val query = "txt_term=$term&pageOffset=$offset&pageMaxSize=$pageSize&sortColumn=subjectDescription&sortDirection=asc"
-        val text = client.get(base + "searchResults/searchResults?$query") {
+        val text = httpClient.get(base + "searchResults/searchResults?$query") {
             header(HttpHeaders.Cookie, cookie)
         }.bodyAsText()
         return AppJson.catalog.decodeFromString(BannerSectionPage.serializer(), text)
     }
 
     private suspend fun fetchCodes(path: String, term: String, max: Int): List<BannerCodeDescription> {
-        val text = client.get(base + "$path?searchTerm=&term=$term&offset=1&max=$max").bodyAsText()
+        val text = httpClient.get(base + "$path?searchTerm=&term=$term&offset=1&max=$max").bodyAsText()
         return AppJson.catalog.decodeFromString(text)
     }
 
-    fun close() = client.close()
+    open fun close() {
+        runCatching { httpClient.close() }
+    }
 
-    companion object {
-        private val mutex = Mutex()
-        suspend fun <T> shared(block: suspend (BannerClient) -> T): T = mutex.withLock {
-            val client = BannerClient()
-            try { block(client) } finally { client.close() }
-        }
+
+}
+
+internal class BannerProvider(private val createClient: () -> BannerClient) {
+    fun create(): BannerClient = createClient()
+
+    suspend fun <T> shared(block: suspend (BannerClient) -> T): T = sharedMutex.withLock {
+        val client = create()
+        try { block(client) } finally { client.close() }
+    }
+
+    private companion object {
+        val sharedMutex = Mutex()
+    }
+}
+
+internal val liveBannerProvider = BannerProvider {
+    requireAndroidBannerRuntime()
+    BannerClient()
+}
+
+private fun requireAndroidBannerRuntime() {
+    // ART reports Dalvik on Android. Host JVMs must inject a fixture or an HTTP engine.
+    check(System.getProperty("java.vm.name") == "Dalvik") {
+        "Live Banner requires Android. Inject a Banner fixture for JVM tests."
     }
 }

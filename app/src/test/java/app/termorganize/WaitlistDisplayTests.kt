@@ -2,6 +2,7 @@ package app.termorganize
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import app.termorganize.core.model.AppJson
 import app.termorganize.core.model.Course
 import app.termorganize.core.model.CourseKey
@@ -19,7 +20,16 @@ import app.termorganize.logic.schedule.ScheduleGenerator
 import app.termorganize.logic.schedule.inputs
 import app.termorganize.logic.search.CatalogIndex
 import app.termorganize.logic.watchlist.WatchlistComparison
+import app.termorganize.logic.watchlist.newWatchItem
+import app.termorganize.logic.schedule.ScheduleEngine
+import app.termorganize.logic.schedule.ScheduleSortOption
+import app.termorganize.logic.search.SearchEngine
+import app.termorganize.logic.search.SearchFilters
+import app.termorganize.logic.search.SearchQuery
+import app.termorganize.logic.search.SearchSort
 import app.termorganize.ui.SectionSeatsText
+import app.termorganize.ui.Light
+import app.termorganize.ui.Dark
 import org.junit.Rule
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -97,17 +107,123 @@ class WaitlistDisplayTests {
 
     @Test fun seatsRowShowsTheWaitlistOnce() {
         rule.setContent { SectionSeatsText(section(seats = 0, cap = 10, count = 7)) }
-        rule.onNodeWithText("Full · 0 of 15 seats · Waitlist 7/10").assertExists()
+        rule.onNodeWithText("Full, Waitlist 7/10").assertExists()
     }
 
     @Test fun seatsRowForQueuedSectionWithSeatsHasNoDuplicateWord() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 3)) }
-        rule.onNodeWithText("0 of 15 seats · Waitlist 3/10").assertExists()
+        rule.onNodeWithText("0 of 15 open, Waitlist 3/10").assertExists()
     }
 
     @Test fun seatsRowForOpenSection() {
         rule.setContent { SectionSeatsText(section(seats = 2, cap = 10, count = 0)) }
-        rule.onNodeWithText("Open · 2 of 15 seats · Waitlist 0/10").assertExists()
+        rule.onNodeWithText("2 of 15 open, Waitlist 0/10").assertExists()
+    }
+
+    @Test fun seatsRowIsSpokenAsOneMergedDescriptionWithTheWaitlistNumbers() {
+        rule.setContent { SectionSeatsText(section(seats = 0, cap = 10, count = 3)) }
+        rule.onNodeWithContentDescription("Full, 0 of 15 open, 3 of 10 on the waitlist").assertExists()
+    }
+
+    @Test fun spokenLabelForQueuedSectionWithSeatsAndOpenSection() {
+        assertEquals("0 of 15 open, 3 of 10 on the waitlist", section(seats = 2, cap = 10, count = 3).seatsSpokenLabel)
+        assertEquals("2 of 15 open, 0 of 10 on the waitlist", section(seats = 2, cap = 10, count = 0).seatsSpokenLabel)
+        assertEquals("Full, 0 of 15 open", section(seats = 0).seatsSpokenLabel)
+    }
+
+    @Test fun seatsLabelFollowsAndroidCapacityPolicy() {
+        assertEquals("Full", section(seats = 0).seatsLabel)
+        assertEquals("Full", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 0).seatsLabel)
+        assertEquals("0 of 15 open", section(seats = 2, cap = 10, count = 3).seatsLabel)
+        assertEquals("2 of 15 open", section(seats = 2).seatsLabel)
+        assertEquals("2 open", CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 2).seatsLabel)
+    }
+
+    @Test fun seatsLabelClampsWhenSeatsExceedCapacity() {
+        val s = section(seats = 20, cap = 10, count = 0)
+        assertEquals("15 of 15 open", s.seatsLabel)
+        assertEquals("15 of 15 open, 0 of 10 on the waitlist", s.seatsSpokenLabel)
+    }
+
+    @Test fun spokenLabelMatchesVisibleCountWhenCapacityUnknown() {
+        val one = CourseSection("1", "CS", "1000", seatCapacity = 0, seatsRemaining = 1)
+        val two = CourseSection("2", "CS", "1000", seatCapacity = 0, seatsRemaining = 2)
+        assertEquals("1 open", one.seatsLabel)
+        assertEquals("1 open", one.seatsSpokenLabel)
+        assertEquals("2 open", two.seatsLabel)
+        assertEquals("2 open", two.seatsSpokenLabel)
+    }
+
+    @Test fun tertiaryContrastOnSurfaceContainerHighestIsAtLeastSeven() {
+        val lightContrast = contrast(Light.tertiary, Light.surfaceContainerHighest)
+        val darkContrast = contrast(Dark.tertiary, Dark.surfaceContainerHighest)
+        assertTrue(lightContrast >= 7.0)
+        assertTrue(darkContrast >= 7.0)
+    }
+
+    private fun luminance(color: androidx.compose.ui.graphics.Color): Double {
+        fun channel(c: Float): Double = if (c <= 0.04045f) c / 12.92 else Math.pow(((c + 0.055) / 1.055).toDouble(), 2.4)
+        return 0.2126 * channel(color.red) + 0.7152 * channel(color.green) + 0.0722 * channel(color.blue)
+    }
+
+    private fun contrast(c1: androidx.compose.ui.graphics.Color, c2: androidx.compose.ui.graphics.Color): Double {
+        val l1 = luminance(c1)
+        val l2 = luminance(c2)
+        val lighter = maxOf(l1, l2)
+        val darker = minOf(l1, l2)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    @Test fun overbookedSectionIsFullWithZeroOpenSeats() {
+        val s = section(seats = -2)
+        assertEquals(0, s.openSeats)
+        assertFalse(s.isOpen)
+    }
+
+    @Test fun openSeatsOnlyFilterRejectsQueuedSectionWithSeats() {
+        val filters = SearchFilters(openSeatsOnly = true)
+        assertFalse(filters.matches(section(seats = 5, cap = 10, count = 3)))
+        assertFalse(filters.matches(section(seats = 0)))
+        assertTrue(filters.matches(section(seats = 5)))
+    }
+
+    @Test fun openSeatsSortIgnoresSeatsBehindAQueue() {
+        val queued = gsec("1", seats = 30, count = 3, start = 9)
+        val open = gsec("2", seats = 4, count = 0, start = 11)
+        fun course(number: String) = Course("CS", number, "CS $number", minCredits = 4.0, maxCredits = 4.0, detailsLoaded = true)
+        val index = CatalogIndex.build(
+            TermCatalog(
+                term = Term("202710", "Fall 2026 Semester"),
+                courses = listOf(course("3000"), course("3100")),
+                sections = listOf(queued, open.copy(number = "3100")),
+            ),
+        )
+        val codes = SearchEngine.search(SearchQuery("", sort = SearchSort.OPEN_SEATS), index).results.map { it.course.code }
+        assertEquals(listOf("CS 3100", "CS 3000"), codes)
+    }
+
+    @Test fun scheduleMeasureCountsOnlyOpenSeats() {
+        val g = ScheduleEngine.measure(listOf(gsec("1", seats = 30, count = 3, start = 9), gsec("2", seats = 4, count = 0, start = 11)))
+        assertEquals(0, g.minSeats)
+        assertEquals(4, g.totalSeats)
+        assertEquals(1, g.fullSections)
+    }
+
+    @Test fun generatorRanksByOpenSeatsNotRawSeats() {
+        val index = catalog(gsec("1", seats = 30, count = 3, start = 9), gsec("2", seats = 4, count = 0, start = 11))
+        val plan = SchedulePlan(name = "P", termCode = "202710", courses = listOf(PlanCourse(CourseKey("CS", "3000"), colorIndex = 0)))
+        val schedules = ScheduleGenerator.generate(ScheduleCourseInput.inputs(plan, index), ScheduleFilters(), sort = ScheduleSortOption.MOST_SEATS).schedules
+        assertEquals(listOf("2", "1"), schedules.map { it.crns.single() })
+    }
+
+    @Test fun watchSeedsTheOpenSeatCountSoAQueueIsNotRecordedAsOpen() {
+        val item = newWatchItem(section(seats = 2, cap = 10, count = 3), "Title")
+        assertEquals(0, item.lastSeatsRemaining)
+    }
+
+    @Test fun watchSeedsOpenSeatsWhenNoQueue() {
+        val item = newWatchItem(section(seats = 2, cap = 10, count = 0), "Title")
+        assertEquals(2, item.lastSeatsRemaining)
     }
 
     private fun watch(seats: Int) = WatchItem(

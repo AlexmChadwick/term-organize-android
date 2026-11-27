@@ -360,8 +360,8 @@ data class CourseSection(
     val cpsOnly: Boolean? get() = CpsRestriction.isCpsOnly(restrictions)
     val courseKey: CourseKey get() = CourseKey(subject, number)
     /** Freed seats go to the waitlist first, so a section with a waitlist queue is not open. */
-    val isOpen: Boolean get() = seatsRemaining > 0 && waitlistCount <= 0
-    val openSeats: Int get() = if (isOpen) seatsRemaining else 0
+    val openSeats: Int get() = if (waitlistCount > 0) 0 else seatsRemaining.coerceAtLeast(0)
+    val isOpen: Boolean get() = openSeats > 0
     val isWaitlisted: Boolean get() = waitlistCount > 0
     /** "Waitlist 7/10", "Waitlist 7" when the capacity is unknown, or null when there is no waitlist. */
     val waitlistLabel: String? get() = when {
@@ -372,8 +372,6 @@ data class CourseSection(
     val availabilityLabel: String get() = if (seatsRemaining <= 0) "Full" else if (isWaitlisted) "Waitlist" else "Open"
     val hasWaitlist: Boolean get() = waitlistCapacity > 0
     val isFull: Boolean get() = !isOpen
-    val fillFraction: Double
-        get() = if (seatCapacity <= 0) 1.0 else (seatCapacity - seatsRemaining).toDouble().coerceIn(0.0, seatCapacity.toDouble()) / seatCapacity
     val isOnline: Boolean
         get() = campus.contains("online", ignoreCase = true) ||
             (instructionMethod?.contains("online", ignoreCase = true) == true)
@@ -392,7 +390,30 @@ data class CourseSection(
             if (weekly.isEmpty()) return if (isOnline) "Asynchronous / online" else "Times TBA"
             return weekly.joinToString(" · ") { "${it.days.compactLabel} ${it.timeLabel}" }
         }
-    val seatsLabel: String get() = "${openSeats.coerceAtLeast(0)} of $seatCapacity seats"
+    /** Visible seat status, with Android's capacity wording documented in docs/PARITY.md. */
+    val seatsLabel: String get() {
+        val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
+        return when {
+            seatsRemaining <= 0 -> "Full"
+            seatCapacity > 0 -> "$clamped of $seatCapacity open"
+            else -> "$clamped open"
+        }
+    }
+    /** Spoken form of the seats row, carrying the waitlist numbers the visible text abbreviates. */
+    val seatsSpokenLabel: String get() {
+        val clamped = if (seatCapacity > 0) openSeats.coerceAtMost(seatCapacity) else openSeats
+        val status = if (seatsRemaining <= 0) "Full" else null
+        val seats = when {
+            seatCapacity > 0 -> "$clamped of $seatCapacity open"
+            else -> "$clamped open"
+        }
+        val queue = when {
+            waitlistCapacity > 0 -> "$waitlistCount of $waitlistCapacity on the waitlist"
+            waitlistCount > 0 -> "$waitlistCount on the waitlist"
+            else -> null
+        }
+        return listOfNotNull(status, seats, queue).joinToString(", ")
+    }
 
     fun conflicts(other: CourseSection): Boolean {
         val mine = weeklyMeetings

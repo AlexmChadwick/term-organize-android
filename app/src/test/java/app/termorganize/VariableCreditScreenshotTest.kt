@@ -90,9 +90,11 @@ class VariableCreditScreenshotTest {
             }
         }
         check(different > 40) { "$name is blank" }
-        for (dir in listOf(File("/tmp/variable-credits"), File("/opt/cursor/artifacts/screenshots"))) {
-            dir.mkdirs()
-            File(dir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        val baseDir = File(System.getProperty("termorganize.screenshot.dir") ?: "${System.getProperty("java.io.tmpdir", "/tmp")}/variable-credits")
+        runCatching {
+            if (baseDir.mkdirs() || baseDir.isDirectory) {
+                File(baseDir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            }
         }
     }
 }

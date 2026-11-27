@@ -16,6 +16,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.lifecycle.ViewModelProvider
+import app.termorganize.core.banner.FakeBannerRule
 import app.termorganize.core.model.CourseKey
 import app.termorganize.ui.AppModel
 import org.junit.Assert.assertEquals
@@ -30,7 +31,10 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33], application = TermOrganizeApp::class, qualifiers = "w411dp-h840dp-mdpi")
 class ScheduleRootTest {
-    @get:Rule
+    @get:Rule(order = 0)
+    val fakeBannerRule = FakeBannerRule()
+
+    @get:Rule(order = 1)
     val rule = createAndroidComposeRule<MainActivity>()
 
     private lateinit var model: AppModel

@@ -82,6 +82,10 @@ android {
     sourceSets {
         getByName("test") {
             assets.srcDir("src/main/assets")
+            java.srcDir("src/testSupport/java")
+        }
+        getByName("androidTest") {
+            java.srcDir("src/testSupport/java")
         }
     }
 
@@ -95,6 +99,21 @@ android {
         warningsAsErrors = false
         checkReleaseBuilds = true
         disable += setOf("ObsoleteLintCustomCheck", "GradleDependency", "AndroidGradlePluginVersion")
+    }
+}
+
+tasks.withType<Test>().configureEach {
+    providers.systemProperty("termorganize.screenshot.dir").orNull?.let {
+        systemProperty("termorganize.screenshot.dir", it)
+    }
+}
+
+tasks.register("prepareDebugUnitTests") {
+    val debugUnitTests = provider { tasks.named<Test>("testDebugUnitTest").get() }
+    dependsOn(debugUnitTests.map { it.taskDependencies.getDependencies(it) })
+    doLast {
+        // Resolve test runtime artifacts before CI enters the network namespace.
+        debugUnitTests.get().inputs.files.files
     }
 }
 

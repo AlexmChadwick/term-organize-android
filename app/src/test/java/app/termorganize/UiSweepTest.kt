@@ -17,6 +17,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.ext.junit.rules.ActivityScenarioRule
+import app.termorganize.core.banner.FakeBannerRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -29,6 +30,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowDialog
 import java.io.File
+import java.nio.file.Files
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -36,7 +38,9 @@ import java.io.File
 class UiSweepPhoneTest {
     private val compose = createAndroidComposeRule<MainActivity>()
 
-    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-phone.db")).around(compose)
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())
+        .around(FreshDatabase("sweep-phone.db"))
+        .around(compose)
 
     @Test fun lightAndDark() = sweep(compose, "phone")
 }
@@ -47,7 +51,9 @@ class UiSweepPhoneTest {
 class UiSweepTabletTest {
     private val compose = createAndroidComposeRule<MainActivity>()
 
-    @get:Rule val rule: TestRule = RuleChain.outerRule(FreshDatabase("sweep-tablet.db")).around(compose)
+    @get:Rule val rule: TestRule = RuleChain.outerRule(FakeBannerRule())
+        .around(FreshDatabase("sweep-tablet.db"))
+        .around(compose)
 
     @Test fun lightAndDark() = sweep(compose, "tablet")
 }
@@ -55,14 +61,27 @@ class UiSweepTabletTest {
 private class FreshDatabase(private val name: String) : TestRule {
     override fun apply(base: Statement, description: Description): Statement = object : Statement() {
         override fun evaluate() {
-            System.setProperty("termorganize.freshdb", "1")
-            System.setProperty("termorganize.dbname", name)
-            base.evaluate()
+            val previousFreshDb = System.setProperty("termorganize.freshdb", "1")
+            val previousDbName = System.setProperty("termorganize.dbname", name)
+            try {
+                base.evaluate()
+            } finally {
+                restoreProperty("termorganize.freshdb", previousFreshDb)
+                restoreProperty("termorganize.dbname", previousDbName)
+            }
         }
+    }
+
+    private fun restoreProperty(key: String, value: String?) {
+        if (value == null) System.clearProperty(key) else System.setProperty(key, value)
     }
 }
 
 private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>, form: String) {
+    val outputDir = createSweepOutputDirectory()
+    println("Sweep screenshots: ${outputDir.absolutePath}")
+    fun capture(theme: String, name: String) = captureScreenshot(rule, outputDir, theme, name)
+
     step("catalog") {
         rule.waitUntil(timeoutMillis = 90_000) {
             rule.onAllNodes(hasText("—")).fetchSemanticsNodes().isEmpty() &&
@@ -78,30 +97,30 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.onNodeWithText("Light").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "settings")
+    capture("$form-light", "settings")
     scrollTo(rule, "Version 1.1.0")
-    capture(rule, "$form-light", "settings-legal")
+    capture("$form-light", "settings-legal")
     step("home") {
         rule.onNodeWithText("Home").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "home")
+    capture("$form-light", "home")
     step("search-empty") {
         rule.onNodeWithText("Search the catalog").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
     }
-    capture(rule, "$form-light", "search-empty")
+    capture("$form-light", "search-empty")
     step("search-results") {
         replace(rule, "search-field", "CS 3000")
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Algorithms", substring = true)).fetchSemanticsNodes().isNotEmpty() }
     }
-    capture(rule, "$form-light", "search-results")
+    capture("$form-light", "search-results")
     step("filters") {
         rule.onNodeWithText("Filters").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Subjects")).fetchSemanticsNodes().isNotEmpty() }
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "search-filters")
+    capture("$form-light", "search-filters")
     step("filters-done") {
         scrollTo(rule, "Done")
         rule.onNodeWithText("Done").performClick()
@@ -111,11 +130,11 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         openCourseResult(rule)
         rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Prerequisites")).fetchSemanticsNodes().isNotEmpty() }
     }
-    capture(rule, "$form-light", "course")
+    capture("$form-light", "course")
     scrollTo(rule, "Alert me if a seat opens")
-    capture(rule, "$form-light", "course-sections")
+    capture("$form-light", "course-sections")
     goBack(rule)
-    capture(rule, "$form-light", "after-back")
+    capture("$form-light", "after-back")
     step("search-none") {
         if (!tagged(rule, "search-field")) rule.onNodeWithText("Search").performClick()
         rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
@@ -124,33 +143,33 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
             rule.onAllNodes(hasText("No courses match", substring = true)).fetchSemanticsNodes().isNotEmpty()
         }
     }
-    capture(rule, "$form-light", "search-none")
+    capture("$form-light", "search-none")
     step("schedule-empty") {
         rule.onNodeWithText("Schedule").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "schedule-empty")
+    capture("$form-light", "schedule-empty")
     step("degree-empty") {
         rule.onNodeWithText("Degree").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "degree-empty")
+    capture("$form-light", "degree-empty")
     step("more") {
         rule.onNodeWithText("More").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "more")
+    capture("$form-light", "more")
     step("rooms") {
         rule.onNodeWithText("Free rooms").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "rooms")
+    capture("$form-light", "rooms")
     if (tagged(rule, "room-row")) {
         step("room") {
             rule.onAllNodes(hasTestTag("room-row"), useUnmergedTree = true)[0].performClick()
             rule.waitForIdle()
         }
-        capture(rule, "$form-light", "room")
+        capture("$form-light", "room")
         goBack(rule)
     }
     step("professors") {
@@ -158,13 +177,13 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.onNodeWithText("Professors").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "professors")
+    capture("$form-light", "professors")
     if (tagged(rule, "professor-row")) {
         step("professor") {
             rule.onAllNodes(hasTestTag("professor-row"), useUnmergedTree = true)[0].performClick()
             rule.waitForIdle()
         }
-        capture(rule, "$form-light", "professor")
+        capture("$form-light", "professor")
         goBack(rule)
     }
     step("watch-empty") {
@@ -172,7 +191,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.onNodeWithText("Seat alerts").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "watch-empty")
+    capture("$form-light", "watch-empty")
     step("theme-dark-empty") {
         rule.onNodeWithText("More").performClick()
         rule.onNodeWithText("Settings and legal").performClick()
@@ -181,14 +200,14 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
     }
     rule.onNodeWithText("Home").performClick()
     rule.waitForIdle()
-    capture(rule, "$form-dark", "home")
+    capture("$form-dark", "home")
     rule.onNodeWithText("Schedule").performClick()
-    capture(rule, "$form-dark", "schedule-empty")
+    capture("$form-dark", "schedule-empty")
     rule.onNodeWithText("Degree").performClick()
-    capture(rule, "$form-dark", "degree-empty")
+    capture("$form-dark", "degree-empty")
     rule.onNodeWithText("More").performClick()
     rule.onNodeWithText("Seat alerts").performClick()
-    capture(rule, "$form-dark", "watch-empty")
+    capture("$form-dark", "watch-empty")
     step("theme-light-again") {
         rule.onNodeWithText("More").performClick()
         rule.onNodeWithText("Settings and legal").performClick()
@@ -212,7 +231,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         rule.onNodeWithText("Schedule").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "schedule")
+    capture("$form-light", "schedule")
     step("generate") {
         scrollTo(rule, "Generate schedules")
         rule.onNodeWithText("Generate schedules").performClick()
@@ -223,7 +242,7 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
         }
         if (rule.onAllNodes(hasText("Option 1")).fetchSemanticsNodes().isNotEmpty()) scrollTo(rule, "Option 1")
     }
-    capture(rule, "$form-light", "schedule-generated")
+    capture("$form-light", "schedule-generated")
     if (tagged(rule, "schedule-option")) {
         step("pick") {
             scrollTo(rule, "Option 1")
@@ -231,85 +250,85 @@ private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity
             rule.waitForIdle()
             scrollTo(rule, "New plan")
         }
-        capture(rule, "$form-light", "schedule-picked")
+        capture("$form-light", "schedule-picked")
         rule.onNodeWithText("Home").performClick()
         rule.waitForIdle()
-        capture(rule, "$form-light", "home-upcoming")
+        capture("$form-light", "home-upcoming")
     }
     step("degree-plan") {
         rule.onNodeWithText("Degree").performClick()
         rule.onNodeWithText("New").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "degree-plan")
+    capture("$form-light", "degree-plan")
     step("watch") {
         rule.onNodeWithText("More").performClick()
         rule.onNodeWithText("Seat alerts").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-light", "watch")
+    capture("$form-light", "watch")
     step("theme-dark") {
         rule.onNodeWithText("More").performClick()
         rule.onNodeWithText("Settings and legal").performClick()
         rule.onNodeWithText("Dark").performClick()
         rule.waitForIdle()
     }
-    capture(rule, "$form-dark", "settings")
+    capture("$form-dark", "settings")
     scrollTo(rule, "Version 1.1.0")
-    capture(rule, "$form-dark", "settings-legal")
+    capture("$form-dark", "settings-legal")
     rule.onNodeWithText("Home").performClick()
     rule.waitForIdle()
-    capture(rule, "$form-dark", "home-upcoming")
+    capture("$form-dark", "home-upcoming")
     rule.onNodeWithText("Search").performClick()
     rule.waitUntil(timeoutMillis = 10_000) { tagged(rule, "search-field") }
-    capture(rule, "$form-dark", "search-empty")
+    capture("$form-dark", "search-empty")
     replace(rule, "search-field", "zzzznotacourse")
     rule.waitUntil(timeoutMillis = 10_000) {
         rule.onAllNodes(hasText("No courses match", substring = true)).fetchSemanticsNodes().isNotEmpty()
     }
-    capture(rule, "$form-dark", "search-none")
+    capture("$form-dark", "search-none")
     replace(rule, "search-field", "CS 3000")
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Algorithms", substring = true)).fetchSemanticsNodes().isNotEmpty() }
-    capture(rule, "$form-dark", "search-results")
+    capture("$form-dark", "search-results")
     rule.onNodeWithText("Filters").performClick()
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Subjects")).fetchSemanticsNodes().isNotEmpty() }
-    capture(rule, "$form-dark", "search-filters")
+    capture("$form-dark", "search-filters")
     scrollTo(rule, "Done")
     rule.onNodeWithText("Done").performClick()
     openCourseResult(rule)
     rule.waitUntil(timeoutMillis = 10_000) { rule.onAllNodes(hasText("Prerequisites")).fetchSemanticsNodes().isNotEmpty() }
-    capture(rule, "$form-dark", "course")
+    capture("$form-dark", "course")
     scrollTo(rule, "Alert me if a seat opens")
-    capture(rule, "$form-dark", "course-sections")
+    capture("$form-dark", "course-sections")
     goBack(rule)
     rule.onNodeWithText("Schedule").performClick()
     rule.waitForIdle()
-    capture(rule, "$form-dark", "schedule")
+    capture("$form-dark", "schedule")
     rule.onNodeWithText("Degree").performClick()
     rule.waitForIdle()
-    capture(rule, "$form-dark", "degree-plan")
+    capture("$form-dark", "degree-plan")
     rule.onNodeWithText("More").performClick()
-    capture(rule, "$form-dark", "more")
+    capture("$form-dark", "more")
     rule.onNodeWithText("Free rooms").performClick()
-    capture(rule, "$form-dark", "rooms")
+    capture("$form-dark", "rooms")
     if (tagged(rule, "room-row")) {
         rule.onAllNodes(hasTestTag("room-row"), useUnmergedTree = true)[0].performClick()
         rule.waitForIdle()
-        capture(rule, "$form-dark", "room")
+        capture("$form-dark", "room")
         goBack(rule)
     }
     rule.onNodeWithText("More").performClick()
     rule.onNodeWithText("Professors").performClick()
-    capture(rule, "$form-dark", "professors")
+    capture("$form-dark", "professors")
     if (tagged(rule, "professor-row")) {
         rule.onAllNodes(hasTestTag("professor-row"), useUnmergedTree = true)[0].performClick()
         rule.waitForIdle()
-        capture(rule, "$form-dark", "professor")
+        capture("$form-dark", "professor")
         goBack(rule)
     }
     rule.onNodeWithText("More").performClick()
     rule.onNodeWithText("Seat alerts").performClick()
-    capture(rule, "$form-dark", "watch")
+    capture("$form-dark", "watch")
 }
 
 private fun tagged(rule: SemanticsNodeInteractionsProvider, tag: String): Boolean =
@@ -345,8 +364,15 @@ private fun step(name: String, block: () -> Unit) {
     }
 }
 
-private fun capture(
+internal fun createSweepOutputDirectory(): File {
+    val root = File(System.getProperty("termorganize.screenshot.dir") ?: System.getProperty("java.io.tmpdir"))
+    Files.createDirectories(root.toPath())
+    return Files.createTempDirectory(root.toPath(), "sweep-").toFile()
+}
+
+private fun captureScreenshot(
     rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>,
+    outputDir: File,
     theme: String,
     name: String,
 ) {
@@ -358,9 +384,7 @@ private fun capture(
     } else {
         activity
     }
-    val dir = File("/tmp/sweep")
-    dir.mkdirs()
-    File(dir, "$theme-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    File(outputDir, "$theme-$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     val varied = bitmap.width * bitmap.height
     val pixels = IntArray(varied)
     bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
