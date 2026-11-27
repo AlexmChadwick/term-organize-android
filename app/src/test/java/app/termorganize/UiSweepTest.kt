@@ -77,9 +77,17 @@ private class FreshDatabase(private val name: String) : TestRule {
     }
 }
 
-private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>, form: String) {
-    val outputDir = createSweepOutputDirectory()
-    println("Sweep screenshots: ${outputDir.absolutePath}")
+private fun sweep(rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>, form: String) =
+    withSweepOutputDirectory { outputDir ->
+        println("Sweep screenshots: ${outputDir.absolutePath}")
+        runSweep(rule, form, outputDir)
+    }
+
+private fun runSweep(
+    rule: AndroidComposeTestRule<ActivityScenarioRule<MainActivity>, MainActivity>,
+    form: String,
+    outputDir: File,
+) {
     fun capture(theme: String, name: String) = captureScreenshot(rule, outputDir, theme, name)
 
     step("catalog") {
@@ -364,10 +372,22 @@ private fun step(name: String, block: () -> Unit) {
     }
 }
 
+internal const val SCREENSHOT_DIR_PROPERTY = "termorganize.screenshot.dir"
+
 internal fun createSweepOutputDirectory(): File {
-    val root = File(System.getProperty("termorganize.screenshot.dir") ?: System.getProperty("java.io.tmpdir"))
+    val root = File(System.getProperty(SCREENSHOT_DIR_PROPERTY) ?: System.getProperty("java.io.tmpdir"))
     Files.createDirectories(root.toPath())
     return Files.createTempDirectory(root.toPath(), "sweep-").toFile()
+}
+
+/** Screenshots are kept only when the output property asks for them; otherwise the temp dir is removed. */
+internal fun <T> withSweepOutputDirectory(block: (File) -> T): T {
+    val outputDir = createSweepOutputDirectory()
+    try {
+        return block(outputDir)
+    } finally {
+        if (System.getProperty(SCREENSHOT_DIR_PROPERTY) == null) outputDir.deleteRecursively()
+    }
 }
 
 private fun captureScreenshot(
